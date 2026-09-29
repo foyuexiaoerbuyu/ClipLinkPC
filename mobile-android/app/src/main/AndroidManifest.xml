@@ -64,9 +64,19 @@
              前台监听在应用退到后台后可能收不到剪贴板事件，
              由本服务在系统层面监听文本选择/窗口内容变化，
              捕获到的文本经 SyncManager 复用与前台完全相同的提交入口 -->
+        <!-- exported 显式声明为 true 的原因（雷电 Android 14 实测结论）：
+             1) 无障碍服务由 system_server 绑定，AOSP checkComponentPermission 对
+                uid 0 / 1000 短路放行，故 exported=false 也能被绑定——exported 并非
+                「启用后不绑定」的根因（实测证明，勿再据此推断）；
+             2) 显式 true 与官方无障碍服务样板一致，规避个别 OEM ROM 在服务可见性 /
+                绑定上的差异，向真机（ColorOS）保守对齐；
+             3) 安全边界由 android:permission=BIND_ACCESSIBILITY_SERVICE（signature 级，
+                仅系统持有）保证，exported=true 不扩大暴露面。
+             注意：实测 am force-stop 会清空系统的无障碍启用项并解绑服务，
+             验证绑定状态时不要紧接 force-stop。 -->
         <service
             android:name=".accessibility.ClipLinkAccessibilityService"
-            android:exported="false"
+            android:exported="true"
             android:label="@string/accessibility_service_label"
             android:permission="android.permission.BIND_ACCESSIBILITY_SERVICE">
             <intent-filter>
