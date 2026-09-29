@@ -5,6 +5,7 @@ import android.net.ConnectivityManager;
 import android.net.Network;
 import android.os.Handler;
 import android.os.Looper;
+import android.os.SystemClock;
 import android.util.Log;
 
 import com.cliplink.mobile.clipboard.ClipboardHelper;
@@ -21,6 +22,7 @@ import org.json.JSONException;
 import org.json.JSONObject;
 
 import java.net.URI;
+import java.nio.charset.StandardCharsets;
 import java.util.List;
 
 /**
@@ -44,6 +46,20 @@ public final class SyncManager {
 
     /** 每次补传批量上限（离线事件，§84） */
     private static final int PENDING_BATCH_LIMIT = 500;
+
+    /**
+     * 前台监听与后台（无障碍）通道的捕获去重窗口。
+     *
+     * <p>复制/剪切时 OnPrimaryClipChangedListener 与无障碍服务都会被触发，
+     * 同一内容在窗口内只受理第一次提交，保证双通道不重复入库、不重复上报。
+     */
+    private static final long CAPTURE_DEDUP_WINDOW_MS = 1500L;
+
+    /** 前台剪贴板监听通道标识（日志诊断用） */
+    private static final String CHANNEL_FOREGROUND = "前台剪贴板监听";
+
+    /** 后台无障碍通道标识（日志诊断用） */
+    private static final String CHANNEL_ACCESSIBILITY = "无障碍后台通道";
 
     /**
      * 状态监听（静态监听器通知 UI，见需求 §63；回调统一切主线程）。
@@ -86,6 +102,11 @@ public final class SyncManager {
 
     /** 网络变化监听：网络恢复/切换时主动触发连接自愈（§91 后台常驻） */
     private volatile ConnectivityManager.NetworkCallback networkCallback;
+
+    /** 双通道去重闸门状态（内容哈希 + 受理时间，见 CAPTURE_DEDUP_WINDOW_MS） */
+    private final Object captureGateLock = new Object();
+    private String lastCaptureHash = "";
+    private long lastCaptureAt = 0L;
 
     private SyncManager() {
     }
@@ -287,7 +308,8 @@ public final class SyncManager {
     /**
      * 统一事件路由入口（见需求 §12）：
      *
-     * USER   - 用户真实复制：入库 + 发送服务器（§81 同步流程）
+     * USER   - 用户真实复制：入库 + 发送服务器（§81 同步流程）；
+     *          前台监听与后台无障碍通道都走这里，由捕获闸门完成双通道去重；
      * REMOTE - 服务器下发：写入系统剪贴板（suppress 防回发，§46-§47）；
      *          入库/游标已在下行协议处理中完成
      * HISTORY - 点击历史项：仅写系统剪贴板，不入库、不发送（§83）
@@ -298,7 +320,7 @@ public final class SyncManager {
         }
         switch (source) {
             case USER:
-                onUserCopied(text);
+                handleUserCapture(text, CHANNEL_FOREGROUND);
                 break;
             case REMOTE:
                 // §46-§47：写入本地剪贴板，由 ClipboardHelper 设置 suppress +
@@ -319,6 +341,72 @@ public final class SyncManager {
         if (helper != null) {
             helper.writeProgrammatic(text);
         }
+    }
+
+    // ---- 后台捕获通道（无障碍服务，全局任务 2/3）------------------------------
+
+    /**
+     * 后台（无障碍）通道提交入口。
+     *
+     * <p>无障碍服务捕获到文本后调用本方法，与前台
+     * OnPrimaryClipChangedListener 完全复用同一提交入口（ClipboardSource.USER）
+     * 与同一去重闸门，捕获之后的入库、上行、ACK 处理链路零分叉（§10-§21 / §81-§87）。
+     *
+     * @param text 后台捕获到的文本（剪贴板直读结果或事件源节点选中文本）
+     */
+    public void submitAccessibilityCapture(String text) {
+        handleUserCapture(text, CHANNEL_ACCESSIBILITY);
+    }
+
+    /** USER 来源统一提交入口：空内容过滤 + 双通道去重闸门 + 常规上行处理 */
+    private void handleUserCapture(String text, String channel) {
+        if (text == null || text.isEmpty()) {
+            return; // 空内容忽略（§77）
+        }
+        if (!acceptCapture(text, channel)) {
+            return; // 双通道重复捕获，直接丢弃
+        }
+        onUserCopied(text);
+    }
+
+    /**
+     * 双通道去重闸门：内容哈希 + 时间窗。
+     *
+     * <p>前台监听与后台无障碍通道对同一次复制/剪切都会触发，
+     * 同一内容在 {@link #CAPTURE_DEDUP_WINDOW_MS} 内只受理第一次提交，
+     * 后续重复捕获直接丢弃（与仓库相邻重复去重形成两级去重）。
+     *
+     * @return true 表示本次捕获被受理；false 表示重复捕获已丢弃
+     */
+    private boolean acceptCapture(String text, String channel) {
+        if (text.getBytes(StandardCharsets.UTF_8).length
+                > ClipboardHelper.MAX_TEXT_BYTES) {
+            Log.w(TAG, channel + " 内容超过 1MB，未同步"); // §73
+            return false;
+        }
+        String hash = HashUtil.sha256Hex(text);
+        long now = SystemClock.uptimeMillis();
+        synchronized (captureGateLock) {
+            if (hash.equals(lastCaptureHash)
+                    && (now - lastCaptureAt) <= CAPTURE_DEDUP_WINDOW_MS) {
+                Log.i(TAG, "双通道重复捕获已抑制(" + channel + "), 距上次 "
+                        + (now - lastCaptureAt) + "ms");
+                return false;
+            }
+            lastCaptureHash = hash;
+            lastCaptureAt = now;
+            return true;
+        }
+    }
+
+    /**
+     * 供后台无障碍通道复用前台同一剪贴板读取器：
+     * 保证直读重试、防循环双保护（suppress / lastProgrammaticHash）状态一致。
+     *
+     * @return 已启动时返回 ClipboardHelper；同步未启动返回 null
+     */
+    public ClipboardHelper getClipboardHelper() {
+        return clipboardHelper;
     }
 
     // ---- 上行：USER 事件（§81 / §43-§44）------------------------------------

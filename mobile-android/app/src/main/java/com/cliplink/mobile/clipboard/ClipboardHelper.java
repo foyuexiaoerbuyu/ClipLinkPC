@@ -152,6 +152,33 @@ public class ClipboardHelper implements ClipboardManager.OnPrimaryClipChangedLis
     }
 
     /**
+     * 直读系统剪贴板文本（供后台无障碍通道复用，含短暂重试，见需求 §57）。
+     *
+     * <p>Android 10+ 起后台应用直读剪贴板可能被系统拒绝（返回 null/空），
+     * 此时由调用方回退其它通道（无障碍：事件源节点的选中文本）。
+     *
+     * @return 文本内容；无文本 / 空 / 读取被拒时返回 null
+     */
+    public String readClipboardText() {
+        return readTextWithRetry();
+    }
+
+    /**
+     * 判断文本是否与本应用最近一次程序写入内容一致（§15 / §47 防循环）。
+     *
+     * <p>供后台无障碍通道复用：PC 下发 / 历史回填写入剪贴板后，
+     * 无障碍侧读到的同一内容不得再作为 USER 事件上行。
+     */
+    public boolean isProgrammaticText(String text) {
+        if (text == null || text.isEmpty()) {
+            return false;
+        }
+        synchronized (lock) {
+            return HashUtil.sha256Hex(text).equals(lastProgrammaticHash);
+        }
+    }
+
+    /**
      * 程序写入系统剪贴板（REMOTE 下发与 HISTORY 点击共用，见需求 §46 / §58 / §83）。
      *
      * 写入前置 suppress 标志并记录 lastProgrammaticClipboardHash（§14-§15），

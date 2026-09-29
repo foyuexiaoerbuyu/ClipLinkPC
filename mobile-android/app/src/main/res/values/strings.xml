@@ -47,4 +47,18 @@
     <string name="btn_battery_whitelist">加入电池优化白名单</string>
     <string name="btn_autostart_settings">打开自启动管理</string>
     <string name="btn_freeze_settings">打开应用速冻/省电设置</string>
+
+    <!-- 后台复制/剪切捕获通道（无障碍服务，见全局任务 2/3） -->
+    <string name="accessibility_service_label">ClipLink 剪贴板同步</string>
+    <string name="accessibility_service_summary">后台复制/剪切同步通道</string>
+    <string name="accessibility_service_description">开启后，应用退到后台时仍可捕获复制/剪切内容并同步到 PC。仅读取剪贴板与文本选中内容，不采集其它信息。</string>
+    <string name="accessibility_status_on">后台复制同步：已开启</string>
+    <string name="accessibility_status_off">后台复制同步：未开启</string>
+    <string name="accessibility_hint_on">· 无障碍服务运行中，退到后台后复制/剪切仍可同步，与前台监听自动去重。</string>
+    <string name="accessibility_hint_off">· 未开启时，应用退到后台后复制/剪切可能无法同步到 PC，建议开启。</string>
+    <string name="btn_accessibility_settings_on">管理无障碍服务</string>
+    <string name="btn_accessibility_settings_off">开启无障碍服务</string>
+    <string name="accessibility_toast_off">后台复制同步未开启，退到后台后复制/剪切可能无法同步，可点击下方按钮开启</string>
+    <string name="accessibility_jump_hint">请在无障碍列表中找到并开启「ClipLink 剪贴板同步」</string>
+    <string name="accessibility_jump_failed">未能打开无障碍设置页，已跳转到应用详情页，请手动进入「无障碍」开启</string>
 </resources>

@@ -18,6 +18,7 @@ import androidx.core.content.ContextCompat;
 import androidx.recyclerview.widget.LinearLayoutManager;
 import androidx.recyclerview.widget.RecyclerView;
 
+import com.cliplink.mobile.accessibility.AccessibilityGuard;
 import com.cliplink.mobile.clipboard.ClipboardSource;
 import com.cliplink.mobile.data.ClipboardRepository;
 import com.cliplink.mobile.data.ConfigRepository;
@@ -72,8 +73,17 @@ public class MainActivity extends Activity
     private Button btnAutoStart;
     private Button btnFreeze;
 
+    /** 无障碍服务状态条（后台复制/剪切捕获通道的存在性与开关入口） */
+    private View boxAccessibility;
+    private TextView tvAccessibilityStatus;
+    private TextView tvAccessibilityHint;
+    private Button btnAccessibilitySettings;
+
     /** 自检未通过时只在每次进入前台提示一次，避免反复打扰 */
     private boolean selfCheckToastShown = false;
+
+    /** 无障碍未开启时同样只在每次进入前台提示一次 */
+    private boolean accessibilityToastShown = false;
 
     private HistoryAdapter adapter;
     private ConfigRepository config;
@@ -114,6 +124,8 @@ public class MainActivity extends Activity
         reloadHistory();
         // 后台常驻自检（§91-§92：电池优化白名单 / ColorOS 后台限制）
         refreshSelfCheck();
+        // 无障碍服务状态（后台复制/剪切捕获通道，回前台时同步一次）
+        refreshAccessibilityState();
     }
 
     @Override
@@ -210,6 +222,31 @@ public class MainActivity extends Activity
                 }
             }
         });
+
+        // ④ 无障碍服务：后台复制/剪切捕获通道的状态展示与一键开启入口
+        boxAccessibility = findViewById(R.id.box_accessibility);
+        tvAccessibilityStatus = findViewById(R.id.tv_accessibility_status);
+        tvAccessibilityHint = findViewById(R.id.tv_accessibility_hint);
+        btnAccessibilitySettings =
+                findViewById(R.id.btn_accessibility_settings);
+        btnAccessibilitySettings.setOnClickListener(new View.OnClickListener() {
+            @Override
+            public void onClick(View v) {
+                if (AccessibilityGuard.isServiceEnabled(MainActivity.this)) {
+                    Toast.makeText(MainActivity.this,
+                            R.string.accessibility_jump_hint,
+                            Toast.LENGTH_SHORT).show();
+                }
+                // 跳转系统无障碍设置页，失败退本应用详情页（同自检引导兜底）
+                if (!AccessibilityGuard
+                        .openAccessibilitySettings(MainActivity.this)) {
+                    fallbackToAppDetails();
+                    Toast.makeText(MainActivity.this,
+                            R.string.accessibility_jump_failed,
+                            Toast.LENGTH_LONG).show();
+                }
+            }
+        });
     }
 
     // ---- 后台常驻自检（§91-§92）----------------------------------------------
@@ -247,6 +284,42 @@ public class MainActivity extends Activity
         BackgroundGuard.openAppDetails(this);
         Toast.makeText(this, R.string.self_check_jump_failed,
                 Toast.LENGTH_LONG).show();
+    }
+
+    // ---- 无障碍服务状态（后台复制/剪切捕获通道）------------------------------
+
+    /**
+     * 无障碍服务开启状态展示（见全局任务 4）。
+     *
+     * 已开启：展示运行中状态与去重说明，按钮变为"管理无障碍服务"；
+     * 未开启：展示未开启状态与影响提示，按钮为"开启无障碍服务"，
+     *         并在每次进入前台时提示一次（不反复打扰，与自检提示同策略）。
+     */
+    private void refreshAccessibilityState() {
+        boolean enabled = AccessibilityGuard.isServiceEnabled(this);
+        if (tvAccessibilityStatus == null) {
+            return;
+        }
+        tvAccessibilityStatus.setText(enabled
+                ? R.string.accessibility_status_on
+                : R.string.accessibility_status_off);
+        tvAccessibilityHint.setText(enabled
+                ? R.string.accessibility_hint_on
+                : R.string.accessibility_hint_off);
+        btnAccessibilitySettings.setText(enabled
+                ? R.string.btn_accessibility_settings_on
+                : R.string.btn_accessibility_settings_off);
+        boxAccessibility.setVisibility(View.VISIBLE);
+
+        if (enabled) {
+            accessibilityToastShown = false;
+            return;
+        }
+        if (!accessibilityToastShown) {
+            accessibilityToastShown = true;
+            Toast.makeText(this, R.string.accessibility_toast_off,
+                    Toast.LENGTH_LONG).show();
+        }
     }
 
     private void setupHistoryList() {

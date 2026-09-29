@@ -1,0 +1,18 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- ClipLink 无障碍服务配置（后台复制/剪切捕获通道）
+
+     - accessibilityEventTypes：文本选择变化 + 窗口内容变化，覆盖"选中后复制/剪切"
+       与"复制动作导致界面内容变化"两类触发时机；
+     - canRetrieveWindowContent=true：允许读取事件源节点（剪贴板直读被 Android 10+
+       后台限制拒绝时，回退读取节点的选中文本）；
+     - 不限定 packageNames：任何应用内的复制/剪切都需要被捕获；
+     - accessibilityFlags：上报 viewId 并可获取交互窗口，便于定位事件源节点。 -->
+<accessibility-service xmlns:android="http://schemas.android.com/apk/res/android"
+    android:accessibilityEventTypes="typeViewTextSelectionChanged|typeWindowContentChanged"
+    android:accessibilityFeedbackType="feedbackGeneric"
+    android:accessibilityFlags="flagReportViewIds|flagRetrieveInteractiveWindows"
+    android:canRetrieveWindowContent="true"
+    android:description="@string/accessibility_service_description"
+    android:notificationTimeout="100"
+    android:settingsActivity="com.cliplink.mobile.MainActivity"
+    android:summary="@string/accessibility_service_summary" />

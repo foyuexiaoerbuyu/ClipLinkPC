@@ -12,4 +12,7 @@
 
     <!-- 后台自检提示条背景（§91） -->
     <color name="warn_background">#FFF8E1</color>
+
+    <!-- 无障碍服务状态条背景（后台复制/剪切捕获通道，见全局任务 2/3） -->
+    <color name="info_background">#E8F1FB</color>
 </resources>

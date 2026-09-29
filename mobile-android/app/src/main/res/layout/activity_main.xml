@@ -61,7 +61,58 @@
         android:layout_height="1dp"
         android:background="@color/divider" />
 
-    <!-- 后台常驻自检提示条（§91：电池优化白名单 / 后台限制未满足时才显示） -->
+    <!-- 上部可滚动区：无障碍状态条 + 自检提示条 + 暂停按钮 + 配置区，
+         小屏/模拟器下不会把历史列表挤出可视区（原有控件 id 全部保持不变） -->
+    <ScrollView
+        android:layout_width="match_parent"
+        android:layout_height="0dp"
+        android:layout_weight="1"
+        android:fillViewport="true">
+
+        <LinearLayout
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:orientation="vertical">
+
+            <!-- 无障碍服务状态与开启入口（后台复制/剪切捕获通道，见全局任务 2/3/4） -->
+            <LinearLayout
+                android:id="@+id/box_accessibility"
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:layout_marginStart="12dp"
+                android:layout_marginTop="10dp"
+                android:layout_marginEnd="12dp"
+                android:background="@color/info_background"
+                android:orientation="vertical"
+                android:padding="10dp">
+
+                <TextView
+                    android:id="@+id/tv_accessibility_status"
+                    android:layout_width="match_parent"
+                    android:layout_height="wrap_content"
+                    android:text="@string/accessibility_status_off"
+                    android:textColor="@color/text_primary"
+                    android:textSize="13sp"
+                    android:textStyle="bold" />
+
+                <TextView
+                    android:id="@+id/tv_accessibility_hint"
+                    android:layout_width="match_parent"
+                    android:layout_height="wrap_content"
+                    android:layout_marginTop="2dp"
+                    android:text="@string/accessibility_hint_off"
+                    android:textColor="@color/text_secondary"
+                    android:textSize="12sp" />
+
+                <Button
+                    android:id="@+id/btn_accessibility_settings"
+                    android:layout_width="match_parent"
+                    android:layout_height="wrap_content"
+                    android:layout_marginTop="6dp"
+                    android:text="@string/btn_accessibility_settings_off" />
+            </LinearLayout>
+
+            <!-- 后台常驻自检提示条（§91：电池优化白名单 / 后台限制未满足时才显示） -->
     <LinearLayout
         android:id="@+id/box_self_check"
         android:layout_width="match_parent"
@@ -218,6 +269,9 @@
             android:layout_marginTop="6dp"
             android:text="@string/btn_save_config" />
     </LinearLayout>
+
+        </LinearLayout>
+    </ScrollView>
 
     <!-- 历史列表标题（§75 created_at DESC 最新在上） -->
     <TextView
