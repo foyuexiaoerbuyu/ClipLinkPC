@@ -601,7 +601,25 @@ void WebSocketServer::Impl::serveConn(const std::shared_ptr<Conn>& conn) {
 
         char buf[8192];
         const int n = ::recv(s, buf, sizeof(buf), 0);
-        if (n <= 0) break;
+        if (n == 0) {
+            // 对端有序关闭（§41）：正常断开
+            CLIPLOG_DEBUG(kTag,
+                          "对端关闭连接, conn=" + std::to_string(conn->id));
+            break;
+        }
+        if (n == SOCKET_ERROR) {
+            const int err = WSAGetLastError();
+            if (ws::isTimedOutSocket()) {
+                // SO_RCVTIMEO 空闲接收超时（10s）：链路仍健康，仅本轮无数据。
+                // 客户端心跳周期 45s > 10s，绝不能误判为断开（否则每 10s 闪断）。
+                continue;
+            }
+            // 其余错误（WSAECONNRESET / WSAENOTSOCK 等）才是链路异常
+            CLIPLOG_DEBUG(kTag,
+                          "recv 失败, err=" + std::to_string(err) +
+                              ", conn=" + std::to_string(conn->id));
+            break;
+        }
         reader.append(buf, static_cast<size_t>(n));
 
         ws::MessageReader::Item item;

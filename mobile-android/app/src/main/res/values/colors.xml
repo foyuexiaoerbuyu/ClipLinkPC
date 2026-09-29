@@ -1,0 +1,15 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <!-- 连接状态三态配色（§38） -->
+    <color name="status_connected">#2E7D32</color>
+    <color name="status_connecting">#F9A825</color>
+    <color name="status_disconnected">#C62828</color>
+
+    <color name="text_primary">#212121</color>
+    <color name="text_secondary">#757575</color>
+    <color name="divider">#E0E0E0</color>
+    <color name="window_background">#FAFAFA</color>
+
+    <!-- 后台自检提示条背景（§91） -->
+    <color name="warn_background">#FFF8E1</color>
+</resources>

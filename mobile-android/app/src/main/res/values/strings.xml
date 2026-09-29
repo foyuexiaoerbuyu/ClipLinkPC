@@ -1,0 +1,50 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string name="app_name">ClipLink</string>
+
+    <!-- 顶部状态条（§38 连接状态三态 / §101 服务器地址读配置） -->
+    <string name="status_connected">已连接</string>
+    <string name="status_connecting">连接中</string>
+    <string name="status_disconnected">连接失败</string>
+    <string name="status_server">服务器：%1$s</string>
+    <string name="status_reconnect_hint">点击状态条重连</string>
+
+    <!-- 暂停/恢复同步（§65） -->
+    <string name="btn_pause_sync">暂停同步</string>
+    <string name="btn_resume_sync">已暂停 · 恢复同步</string>
+    <string name="toast_sync_paused">同步已暂停，仍会保存本地历史</string>
+    <string name="toast_sync_resumed">同步已恢复</string>
+
+    <!-- 配置区（§27 / §37 / §101-§102） -->
+    <string name="config_title">连接配置</string>
+    <string name="label_server_address">服务器地址</string>
+    <string name="hint_server_address">192.168.1.100 或 ws://192.168.1.100:9000</string>
+    <string name="label_port">端口</string>
+    <string name="hint_port">9000</string>
+    <string name="label_device_name">设备名称</string>
+    <string name="hint_device_name">设备显示名称</string>
+    <string name="label_device_id">设备 ID（末 8 位）</string>
+    <string name="btn_save_config">保存并重连</string>
+    <string name="toast_config_saved">配置已保存，正在重连</string>
+    <string name="toast_port_invalid">端口需为 1-65535 的数字</string>
+    <string name="toast_address_empty">服务器地址不能为空</string>
+
+    <!-- 历史列表（§75 / §76 / §83） -->
+    <string name="history_title">剪贴板历史</string>
+    <string name="history_empty">暂无剪贴板历史\n复制一段文本后将显示在这里</string>
+    <string name="sync_status_pending">待同步</string>
+    <string name="sync_status_synced">已同步</string>
+    <string name="sync_status_failed">同步失败</string>
+    <string name="toast_history_copied">已复制到剪贴板</string>
+
+    <!-- 后台常驻自检引导（§91-§92：电池优化白名单 / ColorOS 自启动与速冻） -->
+    <string name="self_check_title">后台常驻检查未通过，连接可能被系统中断：</string>
+    <string name="self_check_battery_missing">· 未加入电池优化白名单</string>
+    <string name="self_check_restricted">· 已被系统限制后台运行（应用速冻/后台冻结）</string>
+    <string name="self_check_hint">请点击下方按钮完成设置，以保持后台同步。</string>
+    <string name="self_check_toast">ClipLink 需要在后台保持连接，请按提示完成设置</string>
+    <string name="self_check_jump_failed">未能直接打开该设置页，已跳转到应用详情页，请手动进入权限/省电设置</string>
+    <string name="btn_battery_whitelist">加入电池优化白名单</string>
+    <string name="btn_autostart_settings">打开自启动管理</string>
+    <string name="btn_freeze_settings">打开应用速冻/省电设置</string>
+</resources>
