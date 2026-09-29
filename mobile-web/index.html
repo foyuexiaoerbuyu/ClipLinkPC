@@ -1,0 +1,647 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>ClipLink 手机端预览</title>
+<style>
+  * { margin: 0; padding: 0; box-sizing: border-box; }
+  html, body {
+    height: 100%;
+    font-family: "Segoe UI", "Microsoft YaHei", sans-serif;
+    background: #e8eaed;
+    color: #202124;
+  }
+  body {
+    display: flex;
+    justify-content: center;
+    align-items: center;
+    padding: 16px;
+  }
+  /* ---- 手机外形（桌面约 375px 居中） ---- */
+  .phone {
+    width: 375px;
+    height: min(760px, calc(100vh - 32px));
+    background: #f6f7f9;
+    border: 10px solid #1f2226;
+    border-radius: 36px;
+    box-shadow: 0 12px 32px rgba(0,0,0,.28);
+    overflow: hidden;
+    display: flex;
+    flex-direction: column;
+    position: relative;
+  }
+  /* ---- 顶部：设备名 + 连接状态 ---- */
+  .topbar {
+    flex: 0 0 auto;
+    padding: 14px 16px 10px;
+    background: #ffffff;
+    border-bottom: 1px solid #e3e5e8;
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+  }
+  .topbar .brand { font-size: 12px; color: #5f6368; }
+  .topbar .dev-name { font-size: 15px; font-weight: 600; margin-top: 2px; }
+  .status {
+    font-size: 12px;
+    padding: 4px 10px;
+    border-radius: 999px;
+    white-space: nowrap;
+  }
+  .status.connected { background: #e6f4ea; color: #137333; }
+  .status.connecting { background: #fef7e0; color: #b06000; }
+  .status.disconnected { background: #fce8e6; color: #c5221f; }
+  /* ---- 顶部预览区 ---- */
+  .preview {
+    flex: 0 0 auto;
+    margin: 10px 12px 0;
+    background: #ffffff;
+    border: 1px solid #dde0e3;
+    border-radius: 10px;
+    padding: 10px 12px;
+    max-height: 132px;
+    overflow-y: auto;
+  }
+  .preview .label { font-size: 11px; color: #5f6368; margin-bottom: 4px; }
+  .preview .content {
+    font-size: 13px;
+    line-height: 1.5;
+    white-space: pre-wrap;
+    word-break: break-all;
+  }
+  .preview .content.placeholder { color: #9aa0a6; }
+  /* ---- 配置区 ---- */
+  .config {
+    flex: 0 0 auto;
+    margin: 10px 12px 0;
+    background: #ffffff;
+    border: 1px solid #dde0e3;
+    border-radius: 10px;
+    padding: 10px 12px;
+  }
+  .config .row { display: flex; align-items: center; gap: 6px; margin-bottom: 8px; }
+  .config .row:last-child { margin-bottom: 0; }
+  .config label.field {
+    font-size: 12px; color: #5f6368; width: 62px; flex: 0 0 auto;
+  }
+  .config input[type="text"] {
+    flex: 1;
+    min-width: 0;
+    font-size: 12px;
+    padding: 6px 8px;
+    border: 1px solid #dadce0;
+    border-radius: 6px;
+    outline: none;
+  }
+  .config input[type="text"]:focus { border-color: #1a73e8; }
+  .config button {
+    font-size: 12px;
+    padding: 6px 12px;
+    border: none;
+    border-radius: 6px;
+    cursor: pointer;
+    color: #fff;
+  }
+  .btn-connect { background: #1a73e8; }
+  .btn-disconnect { background: #5f6368; }
+  .config button:disabled { opacity: .5; cursor: default; }
+  .switch-wrap { font-size: 12px; color: #3c4043; display: flex; align-items: center; gap: 8px; }
+  .log-line {
+    font-size: 11px; color: #80868b; margin-top: 8px;
+    white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+  }
+  /* ---- 历史列表 ---- */
+  .history-title {
+    flex: 0 0 auto;
+    font-size: 12px;
+    color: #5f6368;
+    padding: 10px 16px 4px;
+    display: flex;
+    justify-content: space-between;
+  }
+  .history {
+    flex: 1 1 auto;
+    overflow-y: auto;
+    padding: 0 12px 8px;
+  }
+  .history .empty {
+    font-size: 12px; color: #9aa0a6; text-align: center; padding: 24px 0;
+  }
+  .item {
+    background: #ffffff;
+    border: 1px solid #e3e5e8;
+    border-radius: 8px;
+    padding: 8px 10px;
+    margin-bottom: 6px;
+    cursor: pointer;
+  }
+  .item:hover { border-color: #1a73e8; }
+  .item:active { background: #f1f5fd; }
+  .item .meta {
+    font-size: 11px; color: #80868b; margin-bottom: 3px;
+    display: flex; justify-content: space-between; gap: 6px;
+  }
+  .item .meta .src.send { color: #137333; }
+  .item .meta .src.recv { color: #1a73e8; }
+  .item .meta .src.sync { color: #b06000; }
+  .item .text {
+    font-size: 13px; line-height: 1.45;
+    white-space: pre-wrap; word-break: break-all;
+    display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical;
+    overflow: hidden;
+  }
+  /* ---- 底部输入条 ---- */
+  .inputbar {
+    flex: 0 0 auto;
+    display: flex;
+    gap: 8px;
+    padding: 10px 12px 14px;
+    background: #ffffff;
+    border-top: 1px solid #e3e5e8;
+  }
+  .inputbar input {
+    flex: 1;
+    min-width: 0;
+    font-size: 13px;
+    padding: 9px 10px;
+    border: 1px solid #dadce0;
+    border-radius: 8px;
+    outline: none;
+  }
+  .inputbar input:focus { border-color: #1a73e8; }
+  .inputbar button {
+    font-size: 13px;
+    padding: 0 18px;
+    border: none;
+    border-radius: 8px;
+    background: #1a73e8;
+    color: #fff;
+    cursor: pointer;
+  }
+  .inputbar button:disabled { opacity: .5; cursor: default; }
+</style>
+</head>
+<body>
+<div class="phone">
+  <!-- 顶部：设备名 + 连接状态 -->
+  <div class="topbar">
+    <div>
+      <div class="brand">ClipLink 手机端预览</div>
+      <div class="dev-name" id="devNameView">--</div>
+    </div>
+    <span class="status disconnected" id="statusBadge">断开</span>
+  </div>
+
+  <!-- 顶部预览区 -->
+  <div class="preview">
+    <div class="label">当前预览（点击历史条目送入）</div>
+    <div class="content placeholder" id="previewContent">暂无内容</div>
+  </div>
+
+  <!-- 配置区：服务器地址 / 设备名 / 暂停同步 -->
+  <div class="config">
+    <div class="row">
+      <label class="field" for="serverAddr">服务器地址</label>
+      <input type="text" id="serverAddr" value="ws://127.0.0.1:9000" spellcheck="false">
+      <button class="btn-connect" id="btnConnect">连接</button>
+      <button class="btn-disconnect" id="btnDisconnect">断开</button>
+    </div>
+    <div class="row">
+      <label class="field" for="deviceName">设备名</label>
+      <input type="text" id="deviceName" value="Android 手机" spellcheck="false">
+    </div>
+    <div class="row">
+      <span class="switch-wrap">
+        <input type="checkbox" id="pauseSync">
+        <label for="pauseSync">暂停同步（不发送 / 不接收）</label>
+      </span>
+    </div>
+    <div class="log-line" id="logLine">就绪</div>
+  </div>
+
+  <!-- 历史列表 -->
+  <div class="history-title">
+    <span>历史记录</span>
+    <span id="historyCount">0 条</span>
+  </div>
+  <div class="history" id="historyList">
+    <div class="empty">暂无历史记录</div>
+  </div>
+
+  <!-- 底部输入条 -->
+  <div class="inputbar">
+    <input type="text" id="sendInput" placeholder="输入要同步的文本..." spellcheck="false">
+    <button id="btnSend">发送</button>
+  </div>
+</div>
+
+<script>
+(function () {
+  "use strict";
+
+  // ================= 常量与持久化 =================
+  var DEVICE_TYPE = "ANDROID";               // 本页模拟 Android 客户端
+  var BACKOFF_MS = [1000, 2000, 5000, 10000, 30000]; // 1/2/5/10/30 秒封顶
+  var KEY_DEVICE_ID = "cliplink_web_deviceId";
+  var KEY_LAST_SEQ  = "cliplink_web_lastServerSeq";
+  var KEY_DEV_NAME  = "cliplink_web_deviceName";
+  var KEY_ADDR      = "cliplink_web_serverAddr";
+  var DEFAULT_ADDR  = "ws://127.0.0.1:9000";
+  var DEFAULT_NAME  = "Android 手机";
+
+  function uuid() {
+    if (window.crypto && typeof window.crypto.randomUUID === "function") {
+      return window.crypto.randomUUID();
+    }
+    // 兜底：标准 UUID v4（crypto.randomUUID 在非安全上下文不可用时）
+    var bytes = new Uint8Array(16);
+    if (window.crypto && window.crypto.getRandomValues) {
+      window.crypto.getRandomValues(bytes);
+    } else {
+      for (var i = 0; i < 16; i++) bytes[i] = Math.floor(Math.random() * 256);
+    }
+    bytes[6] = (bytes[6] & 0x0f) | 0x40;
+    bytes[8] = (bytes[8] & 0x3f) | 0x80;
+    var hex = [];
+    for (var j = 0; j < 16; j++) hex.push((bytes[j] + 0x100).toString(16).slice(1));
+    return hex.slice(0, 4).join("") + "-" + hex.slice(4, 6).join("") + "-" +
+           hex.slice(6, 8).join("") + "-" + hex.slice(8, 10).join("") + "-" +
+           hex.slice(10, 16).join("");
+  }
+
+  // deviceId 首次生成后持久化，重启不变（§19 / §102）
+  var deviceId = localStorage.getItem(KEY_DEVICE_ID);
+  if (!deviceId) {
+    deviceId = uuid();
+    localStorage.setItem(KEY_DEVICE_ID, deviceId);
+  }
+
+  // lastServerSeq 持久化（§48 / §110）
+  var lastServerSeq = parseInt(localStorage.getItem(KEY_LAST_SEQ) || "0", 10);
+  if (!Number.isFinite(lastServerSeq) || lastServerSeq < 0) lastServerSeq = 0;
+
+  function saveSeq(seq) {
+    if (seq > lastServerSeq) {
+      lastServerSeq = seq;
+      localStorage.setItem(KEY_LAST_SEQ, String(seq));
+    }
+  }
+
+  // ================= 简单哈希（contentHash，联调用简单实现） =================
+  // 双路 FNV-1a（32bit x2），基于 UTF-8 字节，输出 16 位十六进制
+  function simpleHash(text) {
+    var bytes = new TextEncoder().encode(text);
+    var h1 = 0x811c9dc5, h2 = 0x01000193;
+    for (var i = 0; i < bytes.length; i++) {
+      var b = bytes[i];
+      h1 = Math.imul(h1 ^ b, 0x01000193);
+      h2 = Math.imul(h2 ^ (b + 0x9e3779b9), 0x85ebca6b);
+      h2 = (h2 << 13) | (h2 >>> 19);
+    }
+    h1 = (h1 ^ bytes.length) >>> 0;
+    h2 = (h2 ^ bytes.length) >>> 0;
+    return ("00000000" + h1.toString(16)).slice(-8) +
+           ("00000000" + h2.toString(16)).slice(-8);
+  }
+
+  // ================= DOM =================
+  function $(id) { return document.getElementById(id); }
+  var elStatus = $("statusBadge"), elDevName = $("devNameView");
+  var elServerAddr = $("serverAddr"), elDeviceName = $("deviceName");
+  var elBtnConnect = $("btnConnect"), elBtnDisconnect = $("btnDisconnect");
+  var elPause = $("pauseSync"), elLog = $("logLine");
+  var elPreview = $("previewContent");
+  var elHistory = $("historyList"), elHistoryCount = $("historyCount");
+  var elSendInput = $("sendInput"), elBtnSend = $("btnSend");
+
+  // 恢复本地配置
+  var serverAddr = localStorage.getItem(KEY_ADDR) || DEFAULT_ADDR;
+  var deviceName = localStorage.getItem(KEY_DEV_NAME) || DEFAULT_NAME;
+  elServerAddr.value = serverAddr;
+  elDeviceName.value = deviceName;
+  elDevName.textContent = deviceName;
+
+  // ================= 状态 =================
+  var ws = null;
+  var manuallyClosed = false;   // 用户点“断开”则不自动重连
+  var backoffIndex = 0;         // 退避档位，连接成功后复位
+  var reconnectTimer = null;
+  var paused = false;           // 暂停同步开关（§65）
+  var history = [];             // {time, content, source}
+  var maxHistory = 200;
+
+  function log(msg) {
+    var d = new Date();
+    function p(n) { return (n < 10 ? "0" : "") + n; }
+    elLog.textContent = p(d.getHours()) + ":" + p(d.getMinutes()) + ":" +
+                        p(d.getSeconds()) + "  " + msg;
+  }
+
+  function setStatus(state) {
+    elStatus.className = "status " + state;
+    elStatus.textContent = state === "connected" ? "已连接"
+                         : state === "connecting" ? "连接中" : "断开";
+  }
+
+  // ================= 连接管理 =================
+  function clearReconnect() {
+    if (reconnectTimer !== null) {
+      clearTimeout(reconnectTimer);
+      reconnectTimer = null;
+    }
+  }
+
+  function scheduleReconnect() {
+    if (manuallyClosed) return;
+    clearReconnect();
+    var delay = BACKOFF_MS[Math.min(backoffIndex, BACKOFF_MS.length - 1)];
+    backoffIndex++;
+    log("连接断开，" + (delay / 1000) + " 秒后重连（第 " + backoffIndex + " 次退避）");
+    reconnectTimer = setTimeout(function () {
+      reconnectTimer = null;
+      connect();
+    }, delay);
+  }
+
+  function sendRaw(obj) {
+    if (ws && ws.readyState === WebSocket.OPEN) {
+      ws.send(JSON.stringify(obj));
+      return true;
+    }
+    return false;
+  }
+
+  // register（§42）+ sync_request 补历史（§50）：连接成功与重连均发送
+  function onOpen() {
+    setStatus("connected");
+    backoffIndex = 0;
+    log("已连接 " + elServerAddr.value);
+    sendRaw({
+      type: "register",
+      data: {
+        deviceId: deviceId,
+        deviceType: DEVICE_TYPE,
+        deviceName: deviceName
+      }
+    });
+    if (!paused) {
+      sendRaw({ type: "sync_request", data: { lastServerSeq: lastServerSeq } });
+      log("已发送 sync_request(lastServerSeq=" + lastServerSeq + ")");
+    }
+  }
+
+  function connect() {
+    if (ws && (ws.readyState === WebSocket.OPEN || ws.readyState === WebSocket.CONNECTING)) {
+      return;
+    }
+    var addr = elServerAddr.value.trim() || DEFAULT_ADDR;
+    if (!/^wss?:\/\//i.test(addr)) {
+      log("地址无效，需以 ws:// 或 wss:// 开头");
+      setStatus("disconnected");
+      return;
+    }
+    localStorage.setItem(KEY_ADDR, addr);
+    serverAddr = addr;
+    manuallyClosed = false;
+    setStatus("connecting");
+    log("正在连接 " + addr + " ...");
+    try {
+      ws = new WebSocket(addr);
+    } catch (e) {
+      setStatus("disconnected");
+      log("连接失败：" + e.message);
+      scheduleReconnect();
+      return;
+    }
+    ws.onopen = onOpen;
+    ws.onmessage = function (evt) { handleMessage(evt.data); };
+    ws.onerror = function () { log("连接发生错误"); };
+    ws.onclose = function () {
+      setStatus("disconnected");
+      ws = null;
+      scheduleReconnect();
+    };
+  }
+
+  function disconnect() {
+    manuallyClosed = true;
+    clearReconnect();
+    backoffIndex = 0;
+    if (ws) {
+      var closing = ws;
+      ws = null;
+      closing.onclose = function () {};
+      try { closing.close(); } catch (e) { /* 忽略关闭异常 */ }
+    }
+    setStatus("disconnected");
+    log("已手动断开连接");
+  }
+
+  // ================= 消息处理 =================
+  function handleMessage(text) {
+    var msg;
+    try {
+      msg = JSON.parse(text);
+    } catch (e) {
+      log("收到非 JSON 消息，已忽略");
+      return;
+    }
+    if (!msg || typeof msg.type !== "string" || typeof msg.data !== "object" || msg.data === null) {
+      log("消息缺少 type/data 信封，已忽略");
+      return;
+    }
+    switch (msg.type) {
+      case "clipboard": {
+        // 暂停同步时不接收远程内容（§65）
+        if (paused) { log("同步已暂停，忽略收到的 clipboard"); return; }
+        var d = msg.data;
+        if (typeof d.content !== "string" || !d.content) return;
+        addHistory(d.content, "recv");
+        if (typeof d.serverSeq === "number") saveSeq(d.serverSeq);
+        log("收到远程剪贴板（serverSeq=" + (d.serverSeq || "-") +
+            "，" + (d.deviceName || d.deviceId || "未知设备") + "）");
+        break;
+      }
+      case "clipboard_ack": {
+        // 记录 serverSeq 并持久化游标（§44 / §48）
+        var seq = msg.data.serverSeq;
+        if (typeof seq === "number") {
+          saveSeq(seq);
+          log("clipboard_ack：eventId=" + msg.data.eventId + "，serverSeq=" + seq);
+        } else {
+          log("clipboard_ack 缺少 serverSeq");
+        }
+        break;
+      }
+      case "sync_response": {
+        // 增量补历史（§50）：只入列表，不覆盖当前预览（§51）
+        if (paused) { log("同步已暂停，忽略 sync_response"); return; }
+        var events = msg.data.events;
+        if (!Array.isArray(events)) { log("sync_response 缺少 events 数组"); return; }
+        for (var i = 0; i < events.length; i++) {
+          var ev = events[i];
+          if (ev && typeof ev.content === "string" && ev.content) {
+            addHistory(ev.content, "sync");
+          }
+          if (ev && typeof ev.serverSeq === "number") saveSeq(ev.serverSeq);
+        }
+        log("补历史完成，新增 " + events.length + " 条，lastServerSeq=" + lastServerSeq);
+        break;
+      }
+      case "error": {
+        log("服务器 error：" + (msg.data.code || "") + " " + (msg.data.message || ""));
+        break;
+      }
+      default:
+        log("收到未处理消息类型：" + msg.type);
+    }
+  }
+
+  // ================= 历史与预览 =================
+  function formatTime(ts) {
+    var d = new Date(ts);
+    function p(n) { return (n < 10 ? "0" : "") + n; }
+    return (d.getMonth() + 1) + "-" + p(d.getDate()) + " " +
+           p(d.getHours()) + ":" + p(d.getMinutes()) + ":" + p(d.getSeconds());
+  }
+
+  var sourceText = { send: "发送", recv: "接收", sync: "补历史" };
+
+  function renderHistory() {
+    elHistoryCount.textContent = history.length + " 条";
+    if (history.length === 0) {
+      elHistory.innerHTML = '<div class="empty">暂无历史记录</div>';
+      return;
+    }
+    var html = "";
+    for (var i = 0; i < history.length; i++) {
+      var h = history[i];
+      var safe = escapeHtml(h.content);
+      html += '<div class="item" data-idx="' + i + '">' +
+                '<div class="meta"><span class="src ' + h.source + '">' +
+                  sourceText[h.source] + "</span><span>" + formatTime(h.time) +
+                "</span></div>" +
+                '<div class="text">' + safe + "</div>" +
+              "</div>";
+    }
+    elHistory.innerHTML = html;
+  }
+
+  function escapeHtml(s) {
+    return s.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;")
+            .replace(/"/g, "&quot;");
+  }
+
+  function addHistory(content, source) {
+    history.unshift({ time: Date.now(), content: content, source: source });
+    if (history.length > maxHistory) history.length = maxHistory;
+    renderHistory();
+  }
+
+  // 点击历史条目 -> 内容送到顶部预览区（本页为预览演示，不写系统剪贴板）
+  elHistory.addEventListener("click", function (e) {
+    var target = e.target.closest ? e.target.closest(".item") : null;
+    if (!target) return;
+    var idx = parseInt(target.getAttribute("data-idx"), 10);
+    if (!Number.isFinite(idx) || !history[idx]) return;
+    showPreview(history[idx].content);
+    log("已将历史条目 " + (idx + 1) + " 送入顶部预览区");
+  });
+
+  function showPreview(content) {
+    elPreview.textContent = content;
+    elPreview.classList.remove("placeholder");
+  }
+
+  // ================= 发送 clipboard（§43） =================
+  function sendContent() {
+    var content = elSendInput.value;
+    if (!content) {
+      log("输入为空，未发送");
+      return;
+    }
+    var now = Date.now();                       // clientTime = UTC 毫秒（§80）
+    var message = {
+      type: "clipboard",
+      data: {
+        eventId: uuid(),                        // 每个新事件唯一 ID（§18）
+        deviceId: deviceId,
+        deviceType: DEVICE_TYPE,
+        deviceName: deviceName,
+        contentType: "TEXT",
+        contentHash: simpleHash(content),       // 简单哈希实现（联调用）
+        content: content,
+        clientTime: now
+      }
+    };
+    addHistory(content, "send");
+    showPreview(content);
+    elSendInput.value = "";
+    if (paused) {
+      log("同步已暂停，仅记入本地历史，未发送");
+      return;
+    }
+    if (sendRaw(message)) {
+      log("已发送 clipboard（eventId=" + message.data.eventId + "）");
+    } else {
+      log("未连接，仅记入本地历史，待重连后由服务器补历史");
+    }
+  }
+
+  // ================= 事件绑定 =================
+  elBtnConnect.addEventListener("click", function () { clearReconnect(); connect(); });
+  elBtnDisconnect.addEventListener("click", disconnect);
+  elBtnSend.addEventListener("click", sendContent);
+  elSendInput.addEventListener("keydown", function (e) {
+    if (e.key === "Enter") sendContent();
+  });
+
+  elDeviceName.addEventListener("change", function () {
+    deviceName = elDeviceName.value.trim() || DEFAULT_NAME;
+    elDeviceName.value = deviceName;
+    localStorage.setItem(KEY_DEV_NAME, deviceName);
+    elDevName.textContent = deviceName;
+    // 已连接时重新 register，让服务端立即看到新名称（§42）
+    if (ws && ws.readyState === WebSocket.OPEN) {
+      sendRaw({
+        type: "register",
+        data: { deviceId: deviceId, deviceType: DEVICE_TYPE, deviceName: deviceName }
+      });
+      log("设备名已更新并重新 register");
+    } else {
+      log("设备名已保存");
+    }
+  });
+
+  elPause.addEventListener("change", function () {
+    paused = elPause.checked;
+    if (paused) {
+      log("同步已暂停：不发送、不接收");
+    } else {
+      log("同步已恢复");
+      // 恢复后若在线，立即补一次历史，覆盖暂停期间的缺口
+      if (ws && ws.readyState === WebSocket.OPEN) {
+        sendRaw({ type: "sync_request", data: { lastServerSeq: lastServerSeq } });
+        log("已发送 sync_request(lastServerSeq=" + lastServerSeq + ") 补历史");
+      }
+    }
+  });
+
+  // 页面卸载时关闭连接，避免浏览器悬挂重连
+  window.addEventListener("beforeunload", function () {
+    manuallyClosed = true;
+    clearReconnect();
+    if (ws) { try { ws.close(); } catch (e) { /* 忽略 */ } }
+  });
+
+  // ================= 初始化 =================
+  elDevName.textContent = deviceName;
+  renderHistory();
+  log("deviceId=" + deviceId + "，lastServerSeq=" + lastServerSeq);
+  // 自动发起首次连接
+  connect();
+})();
+</script>
+</body>
+</html>

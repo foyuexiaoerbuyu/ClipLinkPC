@@ -1,0 +1,31 @@
+# 编译产物
+build/
+cmake-build-*/
+out/
+CMakeCache.txt
+CMakeFiles/
+*.o
+*.obj
+*.a
+*.lib
+*.dll
+*.so
+*.exe
+
+# IDE / 编辑器
+.vs/
+.vscode/
+.idea/
+*.user
+*.suo
+
+# 运行时与日志
+*.log
+*.db
+*.db-journal
+*.db-wal
+*.db-shm
+
+# 系统
+Thumbs.db
+.DS_Store
