@@ -345,7 +345,11 @@ public final class SyncManager {
      * 程序写入系统剪贴板并返回明确结果（REMOTE / HISTORY / NOTIFICATION 共用）。
      *
      * <p>结果由 {@link ClipboardHelper#writeProgrammatic(String)} 回读校验得出，
-     * 供调用方决定展示"已复制"还是"需要用户复制"的通知（spec §4/§6）。
+     * 供调用方决定展示"已复制"还是"需要用户复制"的通知（spec §2-§3）：
+     * REMOTE 自动路径下 SUCCESS -&gt; 成功通知；FAILED / NOT_ALLOWED -&gt; 带「复制」
+     * 按钮的通知；UNVERIFIED（后台焦点限制、无法回读校验）-&gt; 由
+     * {@code RemoteClipboardNotificationManager.UNVERIFIED_AS_COPIED} 控制，
+     * 默认保守仍带「复制」按钮，日志按 UNVERIFIED 记录（不是 FAILED）。
      */
     private ClipboardWriteResult writeRemote(String text) {
         return writeRemote(text, null);
@@ -385,7 +389,10 @@ public final class SyncManager {
      * suppress + lastProgrammaticClipboardHash 双保护保证这次写入不会被
      * 前台监听或无障碍通道当成 USER 复制重新上传（防回环）。
      *
-     * @return 写入结果（SUCCESS 时通知可升级为"已复制"）
+     * @return 写入结果：SUCCESS 或 UNVERIFIED 时通知可升级为"已复制"
+     *         （UNVERIFIED = 写入调用已被系统接受、后台焦点限制无法回读校验，
+     *         用户主动点击「复制」属明确意图，按已复制处理）；
+     *         FAILED / NOT_ALLOWED 为确定失败，通知保持带「复制」按钮
      */
     public ClipboardWriteResult copyFromNotification(String text) {
         return copyFromNotification(null, text);

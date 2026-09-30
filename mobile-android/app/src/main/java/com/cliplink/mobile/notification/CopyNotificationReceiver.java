@@ -71,10 +71,19 @@ public class CopyNotificationReceiver extends BroadcastReceiver {
                     + "（未生成 eventId、未上行、未广播），eventId=" + eventId);
             manager.markCopied(eventId, notificationId, content);
             showToast(context, R.string.notification_copy_done);
+        } else if (result == ClipboardWriteResult.UNVERIFIED) {
+            // 用户主动点击「复制」是明确意图：写入调用已被系统接受，
+            // 后台焦点限制导致无法回读校验，按"已复制"更新通知并移除按钮
+            Log.i(TAG, "防回环：NOTIFICATION 本地复制完成，但结果无法校验"
+                    + "(UNVERIFIED：后台焦点限制，回读被拒，写入调用已被系统接受)；"
+                    + "按已复制处理（未生成 eventId、未上行、未广播），eventId="
+                    + eventId);
+            manager.markCopied(eventId, notificationId, content);
+            showToast(context, R.string.notification_copy_done);
         } else {
-            // 保持原通知（仍带「复制」按钮），提示用户可重试
-            Log.w(TAG, "NOTIFICATION 本地复制失败 result=" + result
-                    + ", eventId=" + eventId);
+            // FAILED / NOT_ALLOWED：确定失败，保持原通知（仍带「复制」按钮），提示用户可重试
+            Log.w(TAG, "NOTIFICATION 本地复制失败（确定失败）result=" + result
+                    + ", eventId=" + eventId + "，通知保持带「复制」按钮");
             showToast(context, R.string.notification_copy_failed);
         }
     }

@@ -1,5 +1,6 @@
 package com.cliplink.mobile.clipboard;
 
+import android.app.ActivityManager;
 import android.content.ClipData;
 import android.content.ClipboardManager;
 import android.content.Context;
@@ -46,6 +47,7 @@ public class ClipboardHelper implements ClipboardManager.OnPrimaryClipChangedLis
         void onUserClip(String text);
     }
 
+    private final Context appContext;
     private final ClipboardManager clipboardManager;
     private final Handler mainHandler = new Handler(Looper.getMainLooper());
 
@@ -59,6 +61,7 @@ public class ClipboardHelper implements ClipboardManager.OnPrimaryClipChangedLis
 
     public ClipboardHelper(Context context) {
         Context app = context.getApplicationContext();
+        appContext = app;
         clipboardManager =
                 (ClipboardManager) app.getSystemService(Context.CLIPBOARD_SERVICE);
     }
@@ -198,17 +201,21 @@ public class ClipboardHelper implements ClipboardManager.OnPrimaryClipChangedLis
      * （REMOTE 下发 / HISTORY 点击 / NOTIFICATION 复制共用，见需求 §46 / §58 / §83
      * 与《PC 远程剪贴板通知》spec §4）。
      *
-     * <p>与旧实现的关键差异：不再以"setPrimaryClip 未抛异常"判定成功，
-     * 而是写入后回读 {@link ClipboardManager} 当前内容与待写文本比对：
-     * <ul>
-     *   <li>{@link ClipboardWriteResult#SUCCESS}：回读内容与写入内容完全一致；
-     *       Android 10+ 后台读取被系统限制（回读为空但 hasPrimaryClip()=true）
-     *       时按写入成功处理，并在日志中标注"回读受限"；</li>
-     *   <li>{@link ClipboardWriteResult#FAILED}：写入异常、内容过大/为空、
-     *       回读内容与写入内容不一致、回读为空且剪贴板为空、等待主线程超时；</li>
-     *   <li>{@link ClipboardWriteResult#NOT_ALLOWED}：系统拒绝写入
-     *       （SecurityException / 剪贴板服务不可用）。</li>
-     * </ul>
+     * <p>判定顺序（真机 Android 14 实测修正，spec §2）：
+     * <ol>
+     *   <li>setPrimaryClip 抛 SecurityException -&gt; {@link ClipboardWriteResult#NOT_ALLOWED}；
+     *       抛其它异常 -&gt; {@link ClipboardWriteResult#FAILED}；</li>
+     *   <li>回读成功且内容与写入一致 -&gt; {@link ClipboardWriteResult#SUCCESS}；</li>
+     *   <li>回读成功但内容不一致或为空 -&gt; {@link ClipboardWriteResult#FAILED}；</li>
+     *   <li>回读被系统拒绝 / 返回 null（后台焦点限制，例如抛 SecurityException
+     *       或 hasPrimaryClip 不可用）-&gt; {@link ClipboardWriteResult#UNVERIFIED}，
+     *       日志写「回读受限，无法校验（后台焦点限制），写入调用已被系统接受」。</li>
+     * </ol>
+     *
+     * <p>关键修正：旧实现在"回读为空且 hasPrimaryClip=false"时一律判 FAILED，
+     * 但 Android 10+ 后台应用回读剪贴板会被系统伪装成"空剪贴板"（实测后台下发时
+     * setPrimaryClip 已生效、系统自动填充服务已检测到变化），故该情形必须判
+     * UNVERIFIED（无法校验）而非 FAILED（确定失败）。
      *
      * <p>写入前置 suppress 标志并记录 lastProgrammaticClipboardHash（§14-§15），
      * 保证随后的系统回调被识别为程序写入而忽略，不再次发送服务器（§47 防回环）。
@@ -283,37 +290,128 @@ public class ClipboardHelper implements ClipboardManager.OnPrimaryClipChangedLis
     }
 
     /**
-     * 回读系统剪贴板与写入内容比对（spec §4）。
+     * 回读系统剪贴板与写入内容比对（spec §2 判定顺序）。
      *
-     * <p>Android 10+ 对后台应用读取剪贴板有限制，回读可能为空：
-     * 此时若 hasPrimaryClip()=true（说明写入动作确实改了剪贴板），
-     * 按写入成功处理并记录"回读受限"日志，避免把真实成功误判为失败。
+     * <p>关键：必须区分「回读成功但内容为空/不一致」（确定失败 FAILED）
+     * 与「回读被系统拒绝或返回 null」（后台焦点限制，写入调用已被系统接受
+     * 但无法校验 UNVERIFIED）。Android 10+ 后台应用读取剪贴板会被系统
+     * 伪装成"空剪贴板"（getPrimaryClip 返回 null、hasPrimaryClip 返回 false），
+     * 因此当本应用不在前台时，读不到内容一律判 UNVERIFIED，绝不误报 FAILED。
      */
     private ClipboardWriteResult verifyWritten(String expected) {
-        String readBack = readTextWithRetry();
-        if (readBack == null || readBack.isEmpty()) {
-            // 部分 ROM 写入后存在极短可见窗口，延迟后再读一次
-            try {
-                Thread.sleep(80);
-            } catch (InterruptedException ie) {
-                Thread.currentThread().interrupt();
-            }
-            readBack = readTextWithRetry();
+        ReadBack first = readBackForVerify();
+        ClipboardWriteResult verdict = judgeReadBack(first, expected);
+        if (verdict != null) {
+            return verdict;
         }
-        if (readBack != null && readBack.equals(expected)) {
+        // 部分 ROM 写入后存在极短可见窗口：稍等后再读一次
+        sleepQuietly(80);
+        ReadBack second = readBackForVerify();
+        verdict = judgeReadBack(second, expected);
+        if (verdict != null) {
+            return verdict;
+        }
+        if (first.denied || second.denied || !isAppInForeground()) {
+            // 后台焦点限制：写入调用未抛异常（已被系统接受），但无法回读校验
+            Log.w(TAG, "回读受限，无法校验（后台焦点限制），写入调用已被系统接受"
+                    + "；最终结果=UNVERIFIED，reason=readBackDenied，"
+                    + "foreground=" + isAppInForeground()
+                    + ", denied=" + (first.denied || second.denied)
+                    + ", hasPrimaryClip=" + hasPrimaryClip());
+            return ClipboardWriteResult.UNVERIFIED;
+        }
+        Log.e(TAG, "最终结果=FAILED，reason=前台回读为空且剪贴板无内容，写入未生效");
+        return ClipboardWriteResult.FAILED;
+    }
+
+    /**
+     * 单次回读结果的判定：能得出确定结论时返回结果，否则返回 null
+     * （表示"读不到内容且非确定失败"，交由 verifyWritten 结合前台状态裁决）。
+     */
+    private ClipboardWriteResult judgeReadBack(ReadBack readBack, String expected) {
+        if (readBack.text != null && readBack.text.equals(expected)) {
+            Log.i(TAG, "最终结果=SUCCESS，reason=回读内容与写入内容一致，len="
+                    + expected.length());
             return ClipboardWriteResult.SUCCESS;
         }
-        if (readBack != null && !readBack.isEmpty()) {
-            Log.w(TAG, "剪贴板回读内容与写入内容不一致，判定写入失败");
+        if (!readBack.denied && readBack.text != null && !readBack.text.isEmpty()) {
+            // 回读成功但内容不一致：确定失败（内容被其它应用抢占 / 写入未生效）
+            Log.e(TAG, "最终结果=FAILED，reason=回读内容与写入内容不一致，readLen="
+                    + readBack.text.length() + ", expectedLen=" + expected.length());
             return ClipboardWriteResult.FAILED;
         }
-        if (hasPrimaryClip()) {
-            Log.w(TAG, "剪贴板回读受限（Android 10+ 后台读取被拒），"
-                    + "写入未抛异常且剪贴板非空，按写入成功处理");
-            return ClipboardWriteResult.SUCCESS;
+        return null;
+    }
+
+    /** 回读结果：区分「读到文本」「读到空剪贴板」「系统拒绝读取」三种情形 */
+    private static final class ReadBack {
+        /** 读到的文本；null 表示无内容 */
+        final String text;
+        /** true 表示系统拒绝本应用读取剪贴板（后台焦点限制） */
+        final boolean denied;
+
+        ReadBack(String text, boolean denied) {
+            this.text = text;
+            this.denied = denied;
         }
-        Log.e(TAG, "剪贴板回读为空且 hasPrimaryClip=false，判定写入失败");
-        return ClipboardWriteResult.FAILED;
+    }
+
+    /**
+     * 专用于写入校验的回读（不吞掉"被系统拒绝"这一关键信息，
+     * 与 {@link #readTextWithRetry()} 的语义不同），短重试后返回。
+     */
+    private ReadBack readBackForVerify() {
+        if (clipboardManager == null) {
+            return new ReadBack(null, true);
+        }
+        boolean denied = false;
+        for (int attempt = 0; attempt < 2; attempt++) {
+            try {
+                ClipData clip = clipboardManager.getPrimaryClip();
+                if (clip != null && clip.getItemCount() > 0) {
+                    CharSequence cs = clip.getItemAt(0).getText();
+                    return new ReadBack(cs == null ? "" : cs.toString(), false);
+                }
+                // 剪贴板为空：读取动作本身成功，是"读到空"而非"被拒绝"
+                return new ReadBack(null, false);
+            } catch (SecurityException e) {
+                denied = true;
+                Log.w(TAG, "回读剪贴板被系统拒绝(SecurityException，后台焦点限制): "
+                        + e.getMessage());
+            } catch (Exception e) {
+                Log.w(TAG, "回读剪贴板异常: " + e.getMessage());
+            }
+            if (attempt == 0) {
+                sleepQuietly(40);
+            }
+        }
+        return new ReadBack(null, denied);
+    }
+
+    /**
+     * 本应用当前是否处于前台（用于区分"后台焦点限制读不到"与"前台确实没写进去"）。
+     *
+     * <p>拿不到进程状态时返回 false（保守：按后台处理，宁可判 UNVERIFIED
+     * 也不误报 FAILED）。
+     */
+    private boolean isAppInForeground() {
+        if (appContext == null) {
+            return false;
+        }
+        try {
+            ActivityManager am = (ActivityManager)
+                    appContext.getSystemService(Context.ACTIVITY_SERVICE);
+            if (am == null) {
+                return false;
+            }
+            ActivityManager.RunningAppProcessInfo info =
+                    new ActivityManager.RunningAppProcessInfo();
+            ActivityManager.getMyMemoryState(info);
+            return info.importance
+                    <= ActivityManager.RunningAppProcessInfo.IMPORTANCE_FOREGROUND;
+        } catch (Throwable t) {
+            return false;
+        }
     }
 
     /** 当前剪贴板是否存在内容（读取失败按 false 处理，不抛出） */
@@ -326,6 +424,15 @@ public class ClipboardHelper implements ClipboardManager.OnPrimaryClipChangedLis
         } catch (Exception e) {
             Log.w(TAG, "查询剪贴板状态失败: " + e.getMessage());
             return false;
+        }
+    }
+
+    /** 忽略中断的短暂休眠（回读校验用，不抛异常） */
+    private static void sleepQuietly(long millis) {
+        try {
+            Thread.sleep(millis);
+        } catch (InterruptedException ie) {
+            Thread.currentThread().interrupt();
         }
     }
 

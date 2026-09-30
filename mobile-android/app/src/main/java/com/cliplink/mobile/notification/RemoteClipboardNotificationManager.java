@@ -51,6 +51,25 @@ public final class RemoteClipboardNotificationManager {
     public static final String EXTRA_CONTENT = "content";
     public static final String EXTRA_NOTIFICATION_ID = "notificationId";
 
+    /**
+     * UNVERIFIED 结果在「自动路径」下的展示策略开关（spec §3）。
+     *
+     * <p>背景：Android 10+ 后台应用回读剪贴板会被系统伪装成"空剪贴板"，
+     * 此时 {@link ClipboardWriteResult#UNVERIFIED} 表示"写入调用已被系统接受，
+     * 但无法校验"——既不能证明成功也不能证明失败。
+     *
+     * <ul>
+     *   <li>{@code false}（默认，保守策略）：仍展示带「复制」按钮的通知，
+     *       用户可一键再复制一次，绝不会因为误判而让用户拿不到内容；
+     *       但日志按 UNVERIFIED 记录，不写成 FAILED；</li>
+     *   <li>{@code true}（乐观策略）：直接按"已复制"展示普通通知（无按钮），
+     *       通知栏更干净，代价是极少数确实写入失败时会漏掉补救入口。</li>
+     * </ul>
+     *
+     * <p>后续如需一键切换策略，只改这一处常量即可。
+     */
+    public static final boolean UNVERIFIED_AS_COPIED = false;
+
     /** 通知 id 基数：与前台服务常驻通知（1001）错开，避免互相覆盖 */
     private static final int NOTIFICATION_ID_BASE = 2000;
     /** eventId -> notificationId 映射空间（同 eventId 稳定、不同 eventId 极低概率冲突） */
@@ -148,8 +167,14 @@ public final class RemoteClipboardNotificationManager {
      *
      * @param eventId 远程事件 id（仅用于稳定映射通知 id，不参与同步）
      * @param content PC 剪贴板正文
-     * @param result  自动写入结果：SUCCESS -> 「已复制」通知；
-     *                FAILED / NOT_ALLOWED -> 带「复制」按钮的通知
+     * @param result  自动写入结果（spec §3 分流）：
+     *                <ul>
+     *                  <li>SUCCESS -&gt; 「已复制」成功通知（无按钮）；</li>
+     *                  <li>FAILED / NOT_ALLOWED -&gt; 带「复制」按钮的通知；</li>
+     *                  <li>UNVERIFIED -&gt; 由 {@link #UNVERIFIED_AS_COPIED} 控制
+     *                      （默认 false = 保守，仍带「复制」按钮），
+     *                      日志按 UNVERIFIED 记录，不得写成 FAILED。</li>
+     *                </ul>
      */
     public void notifyRemoteClipboard(String eventId, String content,
                                       ClipboardWriteResult result) {
@@ -164,7 +189,34 @@ public final class RemoteClipboardNotificationManager {
             return;
         }
         int notificationId = notificationIdFor(eventId);
-        boolean copied = result == ClipboardWriteResult.SUCCESS;
+        ClipboardWriteResult effective = result == null
+                ? ClipboardWriteResult.FAILED : result;
+        final boolean copied;
+        final String label;
+        switch (effective) {
+            case SUCCESS:
+                copied = true;
+                label = "自动复制成功";
+                break;
+            case UNVERIFIED:
+                // 后台焦点限制导致无法回读校验：写入调用已被系统接受，
+                // 默认保守策略仍给出「复制」入口，但语义必须是 UNVERIFIED 而非 FAILED
+                copied = UNVERIFIED_AS_COPIED;
+                label = copied
+                        ? "自动复制无法校验（后台焦点限制），已按已复制展示(UNVERIFIED)"
+                        : "需要用户复制(带复制按钮, UNVERIFIED：后台焦点限制"
+                                + "无法回读校验，写入调用已被系统接受，非确定失败)";
+                break;
+            case NOT_ALLOWED:
+                copied = false;
+                label = "需要用户复制(带复制按钮, NOT_ALLOWED：系统拒绝程序写入)";
+                break;
+            case FAILED:
+            default:
+                copied = false;
+                label = "需要用户复制(带复制按钮, FAILED：确定写入失败)";
+                break;
+        }
         synchronized (activeNotifications) {
             activeNotifications.remove(notificationId);
             activeNotifications.put(notificationId, eventId == null ? "" : eventId);
@@ -175,10 +227,9 @@ public final class RemoteClipboardNotificationManager {
         try {
             notificationManager.notify(notificationId,
                     buildNotification(eventId, notificationId, content, copied));
-            Log.i(TAG, "远程剪贴板通知已展示: "
-                    + (copied ? "自动复制成功" : "需要用户复制(带复制按钮)")
+            Log.i(TAG, "远程剪贴板通知已展示: " + label
                     + ", notificationId=" + notificationId
-                    + ", result=" + result
+                    + ", result=" + effective
                     + "（写入走 ClipboardHelper 程序写入通道，已置 suppress 防回环）");
         } catch (RuntimeException e) {
             Log.w(TAG, "展示远程剪贴板通知失败（同步不受影响）: " + e.getMessage());
