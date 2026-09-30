@@ -54,10 +54,13 @@
         </activity>
 
         <!-- 剪贴板同步常驻前台服务（Android 不允许永久后台监听剪贴板，
-             通信/同步以后台服务承载，见需求 §91-§92） -->
+             通信/同步以后台服务承载，见需求 §91-§92）。
+             stopWithTask=false：任务从最近任务划掉时不销毁服务（§91 保活），
+             生命周期改由 onTaskRemoved 中主动处理 -->
         <service
             android:name=".service.SyncForegroundService"
             android:exported="false"
+            android:stopWithTask="false"
             android:foregroundServiceType="dataSync" />
 
         <!-- 远程剪贴板通知「复制」按钮接收器（《PC 远程剪贴板通知》spec §8）：
@@ -91,6 +94,7 @@
             android:name=".accessibility.ClipLinkAccessibilityService"
             android:exported="true"
             android:label="@string/accessibility_service_label"
+            android:stopWithTask="false"
             android:permission="android.permission.BIND_ACCESSIBILITY_SERVICE">
             <intent-filter>
                 <action android:name="android.accessibilityservice.AccessibilityService" />

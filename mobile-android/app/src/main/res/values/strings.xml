@@ -62,6 +62,12 @@
     <string name="accessibility_jump_hint">请在无障碍列表中找到并开启「ClipLink 剪贴板同步」</string>
     <string name="accessibility_jump_failed">未能打开无障碍设置页，已跳转到应用详情页，请手动进入「无障碍」开启</string>
 
+    <!-- 后台常驻自检：无障碍服务被系统关闭提示（第二批 §10 / §12） -->
+    <string name="self_check_accessibility_missing">· 后台复制同步（无障碍服务）未开启，退到后台后复制/剪切无法同步到 PC</string>
+    <string name="self_check_accessibility_hint">Android 不允许应用自行开启无障碍服务，请点击下方按钮到系统设置中手动开启「ClipLink 剪贴板同步」；开启后返回应用会自动复检。</string>
+    <string name="self_check_accessibility_restored">后台复制同步已恢复</string>
+    <string name="btn_open_accessibility_settings">去开启无障碍服务</string>
+
     <!-- 远程剪贴板通知（《PC 远程剪贴板通知》spec §5-§8 / §14） -->
     <string name="notification_channel_remote_name">远程剪贴板</string>
     <string name="notification_channel_remote_desc">收到 PC 剪贴板时提示，可直接从通知复制</string>

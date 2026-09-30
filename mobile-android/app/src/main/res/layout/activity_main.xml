@@ -150,6 +150,15 @@
             android:layout_width="match_parent"
             android:layout_height="wrap_content"
             android:text="@string/btn_freeze_settings" />
+
+        <!-- 无障碍服务一键入口（第二批 §10：仅无障碍未启用时显示，
+             点击跳系统无障碍设置页；开启后返回应用自动复检并收起提示条） -->
+        <Button
+            android:id="@+id/btn_self_check_accessibility"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:text="@string/btn_open_accessibility_settings"
+            android:visibility="gone" />
     </LinearLayout>
 
     <!-- 暂停/恢复同步按钮（§65） -->

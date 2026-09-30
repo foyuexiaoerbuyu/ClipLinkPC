@@ -73,6 +73,16 @@ public class MainActivity extends Activity
     private Button btnAutoStart;
     private Button btnFreeze;
 
+    /**
+     * 自检提示条内的"一键开启无障碍"入口（第二批 §10）。
+     *
+     * <p>无障碍未启用时随自检提示条一起显示，点击跳系统无障碍设置页。
+     */
+    private Button btnSelfCheckAccessibility;
+
+    /** 无障碍未启用告警是否已提示过（用于恢复后提示"已恢复"并自动收起） */
+    private boolean accessibilitySelfCheckAlerted = false;
+
     /** 无障碍服务状态条（后台复制/剪切捕获通道的存在性与开关入口） */
     private View boxAccessibility;
     private TextView tvAccessibilityStatus;
@@ -185,7 +195,29 @@ public class MainActivity extends Activity
         btnBatteryWhitelist = findViewById(R.id.btn_battery_whitelist);
         btnAutoStart = findViewById(R.id.btn_autostart_settings);
         btnFreeze = findViewById(R.id.btn_freeze_settings);
+        btnSelfCheckAccessibility =
+                findViewById(R.id.btn_self_check_accessibility);
         boxSelfCheck.setVisibility(View.GONE);
+        btnSelfCheckAccessibility.setVisibility(View.GONE);
+
+        // ④ 自检提示条内的无障碍一键入口（第二批 §10）：
+        //    直接跳系统无障碍设置页，失败退本应用详情页
+        btnSelfCheckAccessibility.setOnClickListener(new View.OnClickListener() {
+            @Override
+            public void onClick(View v) {
+                if (!AccessibilityGuard
+                        .openAccessibilitySettings(MainActivity.this)) {
+                    fallbackToAppDetails();
+                    Toast.makeText(MainActivity.this,
+                            R.string.accessibility_jump_failed,
+                            Toast.LENGTH_LONG).show();
+                } else {
+                    Toast.makeText(MainActivity.this,
+                            R.string.accessibility_jump_hint,
+                            Toast.LENGTH_LONG).show();
+                }
+            }
+        });
 
         // ① 申请电池优化白名单（系统对话框；不可用则退系统电池优化列表）
         btnBatteryWhitelist.setOnClickListener(new View.OnClickListener() {
@@ -251,12 +283,29 @@ public class MainActivity extends Activity
 
     // ---- 后台常驻自检（§91-§92）----------------------------------------------
 
-    /** 检查电池优化白名单与后台限制，未满足时展示提示条并引导设置 */
+    /**
+     * 后台常驻自检（§91-§92 + 第二批 §10）：
+     * 检查电池优化白名单 / 后台限制 / 无障碍服务启用状态，
+     * 未满足时展示提示条并引导设置；全部满足则自动收起提示条。
+     *
+     * <p>无障碍检测说明（第二批 §10/§12）：应用无法自行开启无障碍服务，
+     * 因此这里只做"检测 + 引导 + 复检"：每次回到前台（onResume）都会重新检测，
+     * 用户在系统设置里开启后返回应用，提示条会自动收起（无需重启应用）。
+     */
     private void refreshSelfCheck() {
         BackgroundGuard.Status status = BackgroundGuard.check(this);
-        if (status.satisfied()) {
+        boolean accessibilityEnabled = AccessibilityGuard.isServiceEnabled(this);
+
+        if (status.satisfied() && accessibilityEnabled) {
+            // 全部满足：自动收起提示条（含无障碍开启后自动收起）
             boxSelfCheck.setVisibility(View.GONE);
+            btnSelfCheckAccessibility.setVisibility(View.GONE);
             selfCheckToastShown = false;
+            if (accessibilitySelfCheckAlerted) {
+                accessibilitySelfCheckAlerted = false;
+                Toast.makeText(this, R.string.self_check_accessibility_restored,
+                        Toast.LENGTH_SHORT).show();
+            }
             return;
         }
 
@@ -268,9 +317,20 @@ public class MainActivity extends Activity
         if (status.backgroundRestricted) {
             sb.append('\n').append(getString(R.string.self_check_restricted));
         }
+        if (!accessibilityEnabled) {
+            // 后台同步会失效：如实说明 + 引导用户手动开启（§12）
+            sb.append('\n').append(
+                    getString(R.string.self_check_accessibility_missing));
+            sb.append('\n').append(
+                    getString(R.string.self_check_accessibility_hint));
+            accessibilitySelfCheckAlerted = true;
+        }
         sb.append('\n').append(getString(R.string.self_check_hint));
         tvSelfCheck.setText(sb.toString());
         boxSelfCheck.setVisibility(View.VISIBLE);
+        // 无障碍未启用时才显示"一键开启无障碍服务"入口
+        btnSelfCheckAccessibility.setVisibility(accessibilityEnabled
+                ? View.GONE : View.VISIBLE);
 
         if (!selfCheckToastShown) {
             selfCheckToastShown = true;
