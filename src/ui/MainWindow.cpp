@@ -26,6 +26,7 @@ constexpr wchar_t kWindowTitle[] = L"ClipLink";
 // 控件 ID
 constexpr int kIdSettingsBtn = 1001;
 constexpr int kIdHistoryList = 1002;
+constexpr int kIdPinBtn = 1005;  // 「置顶 / 取消置顶」切换按钮
 
 // 单屏展示行数上限（超出的更旧记录不渲染，避免超长列表拖慢 UI）
 constexpr int kMaxDisplayRows = 200;
@@ -118,6 +119,13 @@ bool MainWindow::create(HINSTANCE instance) {
         0, 0, hwnd_, reinterpret_cast<HMENU>(static_cast<INT_PTR>(1004)),
         instance, nullptr);
 
+    // 标题行右侧：「置顶 / 取消置顶」一键切换（沿用 ⚙ 的扁平按钮风格）
+    pinBtn_ = CreateWindowExW(
+        0, L"BUTTON", L"置顶",
+        WS_CHILD | WS_VISIBLE | BS_FLAT | BS_CENTER | BS_VCENTER, 0, 0, 0, 0,
+        hwnd_, reinterpret_cast<HMENU>(static_cast<INT_PTR>(kIdPinBtn)),
+        instance, nullptr);
+
     // 历史列表：只读 ListBox，通知式（单击/双击均触发选择通知，§76）
     listBox_ = CreateWindowExW(
         WS_EX_CLIENTEDGE, L"LISTBOX", L"",
@@ -128,7 +136,8 @@ bool MainWindow::create(HINSTANCE instance) {
         instance, nullptr);
 
     if (statusText_ == nullptr || settingsBtn_ == nullptr ||
-        headingText_ == nullptr || listBox_ == nullptr) {
+        headingText_ == nullptr || pinBtn_ == nullptr ||
+        listBox_ == nullptr) {
         CLIPLOG_ERROR(kTag, "子控件创建失败, errno=" +
                                 std::to_string(GetLastError()));
         destroy();
@@ -139,6 +148,7 @@ bool MainWindow::create(HINSTANCE instance) {
                  TRUE);
     SendMessageW(headingText_, WM_SETFONT, reinterpret_cast<WPARAM>(font_),
                  TRUE);
+    SendMessageW(pinBtn_, WM_SETFONT, reinterpret_cast<WPARAM>(font_), TRUE);
     SendMessageW(listBox_, WM_SETFONT, reinterpret_cast<WPARAM>(font_), TRUE);
     SendMessageW(settingsBtn_, WM_SETFONT,
                  reinterpret_cast<WPARAM>(gearFont_ != nullptr ? gearFont_
@@ -163,7 +173,9 @@ void MainWindow::layoutChildren() {
     const int pad = scaleForDpi(6);
     const int gear = scaleForDpi(24);
     const int rowH = scaleForDpi(20);
-    const int headH = scaleForDpi(18);
+    const int headH = scaleForDpi(20);
+    const int pinW = scaleForDpi(56);
+    const int gap = scaleForDpi(4);
     const int top = scaleForDpi(6);
 
     // ⚙ 右上角
@@ -172,9 +184,12 @@ void MainWindow::layoutChildren() {
     // 状态文本占剩余宽度
     SetWindowPos(statusText_, nullptr, pad, top + scaleForDpi(4),
                  cw - gear - pad * 3, rowH, SWP_NOZORDER);
-    // 标题行
-    SetWindowPos(headingText_, nullptr, pad, top + gear + scaleForDpi(4),
-                 cw - pad * 2, headH, SWP_NOZORDER);
+    // 标题行：左「剪贴板历史」+ 右「置顶 / 取消置顶」切换按钮
+    const int headTop = top + gear + gap;
+    SetWindowPos(headingText_, nullptr, pad, headTop + scaleForDpi(2),
+                 cw - pad * 2 - pinW - gap, headH, SWP_NOZORDER);
+    SetWindowPos(pinBtn_, nullptr, cw - pad - pinW, headTop, pinW, headH,
+                 SWP_NOZORDER);
     // 列表填满剩余区域（§7 草图）
     const int listTop = top + gear + scaleForDpi(6) + headH + scaleForDpi(4);
     SetWindowPos(listBox_, nullptr, pad, listTop, cw - pad * 2,
@@ -246,6 +261,31 @@ void MainWindow::updateConnStatus() {
     SetWindowTextW(statusText_, text.c_str());
 }
 
+void MainWindow::setTopMost(bool on) {
+    if (hwnd_ == nullptr) return;
+
+    // 置顶态直接落在窗口的 WS_EX_TOPMOST 扩展样式上：
+    // HWND_TOPMOST 保持在其他窗口之上，HWND_NOTOPMOST 恢复普通层级
+    if (!SetWindowPos(hwnd_, on ? HWND_TOPMOST : HWND_NOTOPMOST, 0, 0, 0, 0,
+                      SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE)) {
+        CLIPLOG_WARN(kTag, "窗口置顶状态切换失败, errno=" +
+                               std::to_string(GetLastError()));
+        return;
+    }
+    topMost_ = on;
+
+    // 按钮文案与状态同步，保证「置顶 / 取消置顶」可来回切换
+    if (pinBtn_ != nullptr) {
+        SetWindowTextW(pinBtn_, topMost_ ? L"取消置顶" : L"置顶");
+    }
+    CLIPLOG_INFO(kTag, std::string("窗口置顶状态切换为 ") +
+                           (topMost_ ? "置顶" : "取消置顶"));
+}
+
+void MainWindow::toggleTopMost() {
+    setTopMost(!topMost_);
+}
+
 void MainWindow::show() {
     if (hwnd_ == nullptr) return;
     refreshHistory();
@@ -268,7 +308,7 @@ void MainWindow::destroy() {
     UiDispatcher::instance().unregisterWindow(hwnd_);
     HWND h = hwnd_;
     hwnd_ = nullptr;
-    statusText_ = settingsBtn_ = headingText_ = listBox_ = nullptr;
+    statusText_ = settingsBtn_ = headingText_ = pinBtn_ = listBox_ = nullptr;
     DestroyWindow(h);
 }
 
@@ -301,6 +341,11 @@ void MainWindow::onCommand(WPARAM wParam, LPARAM lParam) {
     if (id == kIdSettingsBtn && code == BN_CLICKED) {
         // §7 ⚙ -> 设置窗口；由 main 装配具体行为（UI/业务解耦，§62）
         if (settingsHandler_) settingsHandler_();
+        return;
+    }
+    if (id == kIdPinBtn && code == BN_CLICKED) {
+        // 快速置顶 / 取消置顶（同一按钮来回切换，无业务层依赖）
+        toggleTopMost();
         return;
     }
     if (id == kIdHistoryList) {
@@ -360,7 +405,9 @@ LRESULT MainWindow::handleMessage(HWND hwnd, UINT msg, WPARAM wParam,
                 gearFont_ = nullptr;
             }
             font_ = nullptr;  // DEFAULT_GUI_FONT 为系统对象，不删除
-            statusText_ = settingsBtn_ = headingText_ = listBox_ = nullptr;
+            statusText_ = settingsBtn_ = headingText_ = pinBtn_ = listBox_ =
+                nullptr;
+            topMost_ = false;  // 窗口已销毁，置顶态随窗口样式一并失效
             return 0;
         default:
             return DefWindowProcW(hwnd, msg, wParam, lParam);

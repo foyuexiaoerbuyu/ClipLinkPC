@@ -44,6 +44,13 @@ public:
     // 连接状态刷新（kMsgConnState 广播触发，UI 线程执行）
     void updateConnStatus();
 
+    // 窗口置顶开关（主界面「置顶 / 取消置顶」入口，可来回切换）：
+    // 置顶态由 SetWindowPos(HWND_TOPMOST / HWND_NOTOPMOST) 落地，
+    // 与按钮文案保持同步（UI 线程内调用）
+    bool topMost() const { return topMost_; }
+    void setTopMost(bool on);
+    void toggleTopMost();
+
     MainWindow(const MainWindow&) = delete;
     MainWindow& operator=(const MainWindow&) = delete;
 
@@ -66,9 +73,12 @@ private:
     HWND statusText_ = nullptr;
     HWND settingsBtn_ = nullptr;
     HWND headingText_ = nullptr;
+    HWND pinBtn_ = nullptr;  // 「置顶 / 取消置顶」一键切换按钮
     HWND listBox_ = nullptr;
     HFONT font_ = nullptr;
     HFONT gearFont_ = nullptr;
+
+    bool topMost_ = false;  // 当前窗口是否处于置顶态
 
     std::function<void()> settingsHandler_;
     std::vector<ClipboardEvent> rows_;  // 与列表项一一对应的完整内容
