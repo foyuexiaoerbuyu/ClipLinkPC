@@ -10,8 +10,10 @@ import android.util.Log;
 
 import com.cliplink.mobile.clipboard.ClipboardHelper;
 import com.cliplink.mobile.clipboard.ClipboardSource;
+import com.cliplink.mobile.clipboard.ClipboardWriteResult;
 import com.cliplink.mobile.data.ClipboardRepository;
 import com.cliplink.mobile.data.ConfigRepository;
+import com.cliplink.mobile.notification.RemoteClipboardNotificationManager;
 import com.cliplink.mobile.protocol.ClipboardEvent;
 import com.cliplink.mobile.protocol.HashUtil;
 import com.cliplink.mobile.protocol.SyncProtocol;
@@ -313,34 +315,94 @@ public final class SyncManager {
      * REMOTE - 服务器下发：写入系统剪贴板（suppress 防回发，§46-§47）；
      *          入库/游标已在下行协议处理中完成
      * HISTORY - 点击历史项：仅写系统剪贴板，不入库、不发送（§83）
+     * NOTIFICATION - 点击通知「复制」：仅写系统剪贴板，不入库、不上行、
+     *          不生成 eventId、不广播（通知不得成为同步事件来源，spec §9/§12）
      */
-    public void handleClipboardEvent(ClipboardSource source, String text) {
+    public ClipboardWriteResult handleClipboardEvent(ClipboardSource source, String text) {
         if (text == null || text.isEmpty()) {
-            return; // 空内容忽略（§77）
+            return ClipboardWriteResult.FAILED; // 空内容忽略（§77）
         }
         switch (source) {
             case USER:
                 handleUserCapture(text, CHANNEL_FOREGROUND);
-                break;
+                return ClipboardWriteResult.SUCCESS;
             case REMOTE:
                 // §46-§47：写入本地剪贴板，由 ClipboardHelper 设置 suppress +
                 // lastProgrammaticClipboardHash 保证不回发
-                writeRemote(text);
-                break;
+                return writeRemote(text);
             case HISTORY:
                 // §83：只写剪贴板，不产生新历史、不发送 WebSocket
-                writeRemote(text);
-                break;
+                return writeRemote(text);
+            case NOTIFICATION:
+                // 通知「复制」：同样只写剪贴板，绝不入同步链路
+                return writeRemote(text);
             default:
-                break;
+                return ClipboardWriteResult.FAILED;
         }
     }
 
-    private void writeRemote(String text) {
+    /**
+     * 程序写入系统剪贴板并返回明确结果（REMOTE / HISTORY / NOTIFICATION 共用）。
+     *
+     * <p>结果由 {@link ClipboardHelper#writeProgrammatic(String)} 回读校验得出，
+     * 供调用方决定展示"已复制"还是"需要用户复制"的通知（spec §4/§6）。
+     */
+    private ClipboardWriteResult writeRemote(String text) {
+        return writeRemote(text, null);
+    }
+
+    /**
+     * 程序写入（带兜底上下文）。
+     *
+     * <p>{@code fallbackContext} 用于"通知「复制」冷启动进程"场景：同步服务尚未
+     * 运行时 {@link #clipboardHelper} 为 null，这里临时创建一个仅用于写入的
+     * ClipboardHelper（不调用 startListening，不启动任何监听/同步链路），
+     * 保证通知「复制」按钮在任何进程状态下都能工作。
+     */
+    private ClipboardWriteResult writeRemote(String text, Context fallbackContext) {
         ClipboardHelper helper = clipboardHelper;
-        if (helper != null) {
-            helper.writeProgrammatic(text);
+        if (helper == null) {
+            Context ctx = fallbackContext != null
+                    ? fallbackContext.getApplicationContext() : null;
+            if (ctx != null) {
+                helper = new ClipboardHelper(ctx);
+                Log.i(TAG, "程序写入通道未启动（同步服务未运行），"
+                        + "临时创建只写通道（不启动监听，不影响同步链路）");
+            }
         }
+        if (helper == null) {
+            return ClipboardWriteResult.FAILED;
+        }
+        return helper.writeProgrammatic(text);
+    }
+
+    /**
+     * 通知「复制」按钮的写入入口（供 {@code CopyNotificationReceiver} 调用）。
+     *
+     * <p>契约（spec §8/§9/§12）：来源固定为 {@link ClipboardSource#NOTIFICATION}——
+     * 只写系统剪贴板，不入库、不生成 eventId、不发 WebSocket、不广播，
+     * 也不启动 MainActivity；写入走 ClipboardHelper 程序写入通道，
+     * suppress + lastProgrammaticClipboardHash 双保护保证这次写入不会被
+     * 前台监听或无障碍通道当成 USER 复制重新上传（防回环）。
+     *
+     * @return 写入结果（SUCCESS 时通知可升级为"已复制"）
+     */
+    public ClipboardWriteResult copyFromNotification(String text) {
+        return copyFromNotification(null, text);
+    }
+
+    /**
+     * 通知「复制」按钮的写入入口（带兜底上下文，供接收器在进程冷启动时使用）。
+     *
+     * <p>与 {@link #copyFromNotification(String)} 完全同语义，额外允许在同步服务
+     * 尚未运行时用传入上下文临时建立只写通道（仍不启动监听、不入库、不上行）。
+     */
+    public ClipboardWriteResult copyFromNotification(Context context, String text) {
+        if (text == null || text.isEmpty()) {
+            return ClipboardWriteResult.FAILED;
+        }
+        Log.i(TAG, "NOTIFICATION 来源本地复制：只写剪贴板，不入库/不上行/不生成 eventId");
+        return writeRemote(text, context);
     }
 
     // ---- 后台捕获通道（无障碍服务，全局任务 2/3）------------------------------
@@ -641,8 +703,35 @@ public final class SyncManager {
             notifyHistoryChanged();
             cleanupHistory();
         }
-        // §46-§47：写入系统剪贴板（REMOTE），防循环双保护保证不再回发
-        handleClipboardEvent(ClipboardSource.REMOTE, ev.getContent());
+        // §46-§47：写入系统剪贴板（REMOTE），防循环双保护保证不再回发；
+        // 并按写入结果展示通知（成功 -> 已复制；失败 -> 带「复制」按钮）。
+        // 通知逻辑在写入之后单独 try/catch：任何通知异常都不得影响同步主链路。
+        ClipboardWriteResult writeResult =
+                handleClipboardEvent(ClipboardSource.REMOTE, ev.getContent());
+        notifyRemoteClipboard(ev, writeResult);
+    }
+
+    /**
+     * 远程剪贴板通知（spec §1/§6/§7/§11）：把 REMOTE 写入结果翻译成通知。
+     *
+     * <p>隔离原则：整个通知流程包在 try/catch 中且不改变同步状态，
+     * 通知失败（含无通知权限）只记日志——WebSocket、入库、游标推进
+     * 与自动复制均不受影响，绝不在此处调用任何 stop 类方法。
+     */
+    private void notifyRemoteClipboard(ClipboardEvent ev,
+                                       ClipboardWriteResult writeResult) {
+        try {
+            Context ctx = appContext;
+            if (ctx == null) {
+                return;
+            }
+            RemoteClipboardNotificationManager.getInstance(ctx)
+                    .notifyRemoteClipboard(ev.getEventId(), ev.getContent(),
+                            writeResult);
+        } catch (RuntimeException e) {
+            Log.w(TAG, "远程剪贴板通知异常（同步主链路不受影响）: "
+                    + e.getMessage());
+        }
     }
 
     /** §44：clipboard_ack 更新 serverSeq / serverTime / sync_status=SYNCED */

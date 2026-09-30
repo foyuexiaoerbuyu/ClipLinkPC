@@ -61,4 +61,14 @@
     <string name="accessibility_toast_off">后台复制同步未开启，退到后台后复制/剪切可能无法同步，可点击下方按钮开启</string>
     <string name="accessibility_jump_hint">请在无障碍列表中找到并开启「ClipLink 剪贴板同步」</string>
     <string name="accessibility_jump_failed">未能打开无障碍设置页，已跳转到应用详情页，请手动进入「无障碍」开启</string>
+
+    <!-- 远程剪贴板通知（《PC 远程剪贴板通知》spec §5-§8 / §14） -->
+    <string name="notification_channel_remote_name">远程剪贴板</string>
+    <string name="notification_channel_remote_desc">收到 PC 剪贴板时提示，可直接从通知复制</string>
+    <string name="notification_title">ClipLink</string>
+    <string name="notification_copied">已复制</string>
+    <string name="notification_pc_clipboard">PC 剪贴板</string>
+    <string name="notification_action_copy">复制</string>
+    <string name="notification_copy_done">已复制到剪贴板</string>
+    <string name="notification_copy_failed">复制失败，请点击通知重试</string>
 </resources>

@@ -60,6 +60,19 @@
             android:exported="false"
             android:foregroundServiceType="dataSync" />
 
+        <!-- 远程剪贴板通知「复制」按钮接收器（《PC 远程剪贴板通知》spec §8）：
+             由 RemoteClipboardNotificationManager 通过 PendingIntent 显式拉起，
+             只把通知内容写入系统剪贴板（来源 NOTIFICATION），
+             不入库、不上行、不生成 eventId、不启动 MainActivity。
+             exported=false：仅本应用可触发，外部应用无法伪造。 -->
+        <receiver
+            android:name=".notification.CopyNotificationReceiver"
+            android:exported="false">
+            <intent-filter>
+                <action android:name="com.cliplink.mobile.action.COPY_REMOTE" />
+            </intent-filter>
+        </receiver>
+
         <!-- 后台复制/剪切捕获通道（无障碍服务，见全局任务 2/3）：
              前台监听在应用退到后台后可能收不到剪贴板事件，
              由本服务在系统层面监听文本选择/窗口内容变化，

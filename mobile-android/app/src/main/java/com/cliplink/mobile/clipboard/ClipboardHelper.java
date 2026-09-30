@@ -10,6 +10,8 @@ import android.util.Log;
 import com.cliplink.mobile.protocol.HashUtil;
 
 import java.nio.charset.StandardCharsets;
+import java.util.concurrent.CountDownLatch;
+import java.util.concurrent.TimeUnit;
 
 /**
  * 系统剪贴板监听与读写（Android 端对应 PC 端 ClipboardReader/ClipboardWriter，
@@ -30,6 +32,14 @@ public class ClipboardHelper implements ClipboardManager.OnPrimaryClipChangedLis
 
     /** 文本内容上限：1MB（UTF-8 字节，见需求 §73） */
     public static final int MAX_TEXT_BYTES = 1024 * 1024;
+
+    /**
+     * 程序写入等待主线程完成的超时（毫秒）。
+     *
+     * <p>写入结果需要同步返回给调用方（网络线程），但剪贴板操作统一在主线程执行，
+     * 故用 latch 等待；超时按失败处理，绝不无限阻塞同步线程（§62 / §72）。
+     */
+    private static final long WRITE_TIMEOUT_MS = 1500L;
 
     /** 用户真实复制（USER 来源）回调，主线程触发 */
     public interface UserClipListener {
@@ -102,11 +112,16 @@ public class ClipboardHelper implements ClipboardManager.OnPrimaryClipChangedLis
             // 第一层保护：suppress 标志，消费一次即清除（§14）
             if (suppressNext) {
                 suppressNext = false;
+                // 防回环日志关键字（真机验证时 grep "防回环" 即可确认程序写入未被上行）
+                Log.i(TAG, "防回环：命中程序写入 suppress 标志，"
+                        + "忽略本次系统剪贴板回调，不产生 USER 事件");
                 return;
             }
             // 第二层保护：当前 hash == 最近程序写入 hash 则忽略（§15）
             String currentHash = HashUtil.sha256Hex(text);
             if (currentHash.equals(lastProgrammaticHash)) {
+                Log.i(TAG, "防回环：内容命中程序写入 hash，"
+                        + "忽略本次系统剪贴板回调，不产生 USER 事件");
                 return;
             }
         }
@@ -179,38 +194,139 @@ public class ClipboardHelper implements ClipboardManager.OnPrimaryClipChangedLis
     }
 
     /**
-     * 程序写入系统剪贴板（REMOTE 下发与 HISTORY 点击共用，见需求 §46 / §58 / §83）。
+     * 程序写入系统剪贴板并回读校验，返回明确写入结果
+     * （REMOTE 下发 / HISTORY 点击 / NOTIFICATION 复制共用，见需求 §46 / §58 / §83
+     * 与《PC 远程剪贴板通知》spec §4）。
      *
-     * 写入前置 suppress 标志并记录 lastProgrammaticClipboardHash（§14-§15），
-     * 保证随后的系统回调被识别为程序写入而忽略，不再次发送服务器（§47）。
+     * <p>与旧实现的关键差异：不再以"setPrimaryClip 未抛异常"判定成功，
+     * 而是写入后回读 {@link ClipboardManager} 当前内容与待写文本比对：
+     * <ul>
+     *   <li>{@link ClipboardWriteResult#SUCCESS}：回读内容与写入内容完全一致；
+     *       Android 10+ 后台读取被系统限制（回读为空但 hasPrimaryClip()=true）
+     *       时按写入成功处理，并在日志中标注"回读受限"；</li>
+     *   <li>{@link ClipboardWriteResult#FAILED}：写入异常、内容过大/为空、
+     *       回读内容与写入内容不一致、回读为空且剪贴板为空、等待主线程超时；</li>
+     *   <li>{@link ClipboardWriteResult#NOT_ALLOWED}：系统拒绝写入
+     *       （SecurityException / 剪贴板服务不可用）。</li>
+     * </ul>
+     *
+     * <p>写入前置 suppress 标志并记录 lastProgrammaticClipboardHash（§14-§15），
+     * 保证随后的系统回调被识别为程序写入而忽略，不再次发送服务器（§47 防回环）。
      * 事件来源语义由调用方（SyncManager 事件路由）决定。
+     *
+     * <p>可从任意线程调用：主线程直接执行；其它线程投递主线程并同步等待结果
+     * （超时 {@link #WRITE_TIMEOUT_MS}，避免阻塞同步线程）。
      */
-    public void writeProgrammatic(final String text) {
-        if (text == null || text.isEmpty() || clipboardManager == null) {
-            return;
+    public ClipboardWriteResult writeProgrammatic(final String text) {
+        if (text == null || text.isEmpty()) {
+            return ClipboardWriteResult.FAILED;
+        }
+        if (clipboardManager == null) {
+            Log.e(TAG, "ClipboardManager 不可用，无法写入剪贴板");
+            return ClipboardWriteResult.NOT_ALLOWED;
         }
         if (utf8Length(text) > MAX_TEXT_BYTES) {
             Log.w(TAG, "待写入内容过大，已跳过");
-            return;
+            return ClipboardWriteResult.FAILED;
         }
         // 剪贴板操作统一投递主线程（§62 解耦，网络线程不直接碰系统服务）
+        if (Looper.myLooper() == Looper.getMainLooper()) {
+            return doWriteOnMainThread(text);
+        }
+        final ClipboardWriteResult[] holder = new ClipboardWriteResult[1];
+        final CountDownLatch latch = new CountDownLatch(1);
         mainHandler.post(new Runnable() {
             @Override
             public void run() {
-                synchronized (lock) {
-                    suppressNext = true;
-                    lastProgrammaticHash = HashUtil.sha256Hex(text);
-                    try {
-                        clipboardManager.setPrimaryClip(ClipData.newPlainText(
-                                "ClipLink", text));
-                    } catch (Exception e) {
-                        // 写入失败时回收标志，避免吞掉下一次用户复制（§72）
-                        suppressNext = false;
-                        Log.e(TAG, "写入剪贴板失败: " + e.getMessage());
-                    }
+                try {
+                    holder[0] = doWriteOnMainThread(text);
+                } finally {
+                    latch.countDown();
                 }
             }
         });
+        try {
+            if (!latch.await(WRITE_TIMEOUT_MS, TimeUnit.MILLISECONDS)) {
+                Log.w(TAG, "写入剪贴板等待超时（主线程未及时响应），按失败处理");
+                return ClipboardWriteResult.FAILED;
+            }
+        } catch (InterruptedException e) {
+            Thread.currentThread().interrupt();
+            return ClipboardWriteResult.FAILED;
+        }
+        return holder[0] == null ? ClipboardWriteResult.FAILED : holder[0];
+    }
+
+    /** 主线程内执行的实际写入 + 回读校验（见 writeProgrammatic 说明） */
+    private ClipboardWriteResult doWriteOnMainThread(String text) {
+        synchronized (lock) {
+            suppressNext = true;
+            lastProgrammaticHash = HashUtil.sha256Hex(text);
+            try {
+                clipboardManager.setPrimaryClip(
+                        ClipData.newPlainText("ClipLink", text));
+            } catch (SecurityException e) {
+                // 系统拒绝写入（权限/策略限制）：本次剪贴板未变化，回收标志
+                suppressNext = false;
+                Log.e(TAG, "写入剪贴板被系统拒绝(SecurityException): "
+                        + e.getMessage());
+                return ClipboardWriteResult.NOT_ALLOWED;
+            } catch (Exception e) {
+                // 写入失败时回收标志，避免吞掉下一次用户复制（§72）
+                suppressNext = false;
+                Log.e(TAG, "写入剪贴板失败: " + e.getMessage());
+                return ClipboardWriteResult.FAILED;
+            }
+        }
+        // 回读校验：setPrimaryClip 未抛异常不等于写入成功（spec §4）
+        return verifyWritten(text);
+    }
+
+    /**
+     * 回读系统剪贴板与写入内容比对（spec §4）。
+     *
+     * <p>Android 10+ 对后台应用读取剪贴板有限制，回读可能为空：
+     * 此时若 hasPrimaryClip()=true（说明写入动作确实改了剪贴板），
+     * 按写入成功处理并记录"回读受限"日志，避免把真实成功误判为失败。
+     */
+    private ClipboardWriteResult verifyWritten(String expected) {
+        String readBack = readTextWithRetry();
+        if (readBack == null || readBack.isEmpty()) {
+            // 部分 ROM 写入后存在极短可见窗口，延迟后再读一次
+            try {
+                Thread.sleep(80);
+            } catch (InterruptedException ie) {
+                Thread.currentThread().interrupt();
+            }
+            readBack = readTextWithRetry();
+        }
+        if (readBack != null && readBack.equals(expected)) {
+            return ClipboardWriteResult.SUCCESS;
+        }
+        if (readBack != null && !readBack.isEmpty()) {
+            Log.w(TAG, "剪贴板回读内容与写入内容不一致，判定写入失败");
+            return ClipboardWriteResult.FAILED;
+        }
+        if (hasPrimaryClip()) {
+            Log.w(TAG, "剪贴板回读受限（Android 10+ 后台读取被拒），"
+                    + "写入未抛异常且剪贴板非空，按写入成功处理");
+            return ClipboardWriteResult.SUCCESS;
+        }
+        Log.e(TAG, "剪贴板回读为空且 hasPrimaryClip=false，判定写入失败");
+        return ClipboardWriteResult.FAILED;
+    }
+
+    /** 当前剪贴板是否存在内容（读取失败按 false 处理，不抛出） */
+    private boolean hasPrimaryClip() {
+        if (clipboardManager == null) {
+            return false;
+        }
+        try {
+            return clipboardManager.hasPrimaryClip();
+        } catch (Exception e) {
+            Log.w(TAG, "查询剪贴板状态失败: " + e.getMessage());
+            return false;
+        }
     }
 
     private static int utf8Length(String text) {
