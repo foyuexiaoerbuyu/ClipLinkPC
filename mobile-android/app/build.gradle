@@ -19,10 +19,31 @@ android {
         targetCompatibility JavaVersion.VERSION_17
     }
 
+    // 统一签名配置（见需求：生成签名文件，打包 release 和 debug 运行都使用该签名，
+    // 密码写死到代码里；keystore 纳入 git 版本控制）
+    signingConfigs {
+        cliplink {
+            // keystore 位于模块同级目录 mobile-android/keystore/
+            storeFile rootProject.file('keystore/cliplink-release.jks')
+            storePassword 'ClipLink2026!'
+            keyAlias 'cliplink'
+            keyPassword 'ClipLink2026!'
+            // 三类签名方案全开，兼容不同 Android 版本安装校验
+            enableV1Signing true
+            enableV2Signing true
+            enableV3Signing true
+        }
+    }
+
     buildTypes {
+        debug {
+            // debug 运行同样使用统一签名，保证 debug/release 可互相覆盖安装
+            signingConfig signingConfigs.cliplink
+        }
         release {
             minifyEnabled false
             proguardFiles getDefaultProguardFile('proguard-android-optimize.txt'), 'proguard-rules.pro'
+            signingConfig signingConfigs.cliplink
         }
     }
 }
