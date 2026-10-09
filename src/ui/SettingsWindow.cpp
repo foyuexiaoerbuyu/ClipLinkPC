@@ -39,9 +39,10 @@ constexpr int kIdSyncEnabled = 1110;
 constexpr int kIdSave = 1111;
 constexpr int kIdHint = 1112;
 constexpr int kIdDayUnit = 1113;
+constexpr int kIdEdgeHide = 1114;
 
 constexpr int kDesignWidth = 340;
-constexpr int kDesignHeight = 396;
+constexpr int kDesignHeight = 424;
 
 int scaleForDpi(int value) {
     HDC dc = GetDC(nullptr);
@@ -181,6 +182,12 @@ bool SettingsWindow::create(HINSTANCE instance) {
     chkSyncEnabled_ =
         makeControl(L"BUTTON", L"自动同步剪贴板", BS_AUTOCHECKBOX, lblX + 150,
                     y, 170, 20, kIdSyncEnabled);
+    y += 30;
+
+    // 贴边隐藏：勾选后主界面拖到屏幕顶部自动隐藏，鼠标滑到顶部边缘再唤出
+    chkEdgeHide_ =
+        makeControl(L"BUTTON", L"贴边隐藏（拖到屏幕顶部自动隐藏主界面）",
+                    BS_AUTOCHECKBOX, lblX, y, 300, 20, kIdEdgeHide);
     y += 34;
 
     btnSave_ = makeControl(L"BUTTON", L"保存", BS_DEFPUSHBUTTON, lblX, y, 90,
@@ -192,7 +199,7 @@ bool SettingsWindow::create(HINSTANCE instance) {
         chkServerEnabled_ == nullptr || editPort_ == nullptr ||
         editMaxCount_ == nullptr || editMaxDays_ == nullptr ||
         chkAutoStart_ == nullptr || chkSyncEnabled_ == nullptr ||
-        btnSave_ == nullptr) {
+        chkEdgeHide_ == nullptr || btnSave_ == nullptr) {
         CLIPLOG_ERROR(kTag, "子控件创建失败, errno=" +
                                 std::to_string(GetLastError()));
         destroy();
@@ -228,6 +235,8 @@ void SettingsWindow::loadFromConfig() {
                  cfg.autoStart ? BST_CHECKED : BST_UNCHECKED, 0);
     SendMessageW(chkSyncEnabled_, BM_SETCHECK,
                  cfg.syncEnabled ? BST_CHECKED : BST_UNCHECKED, 0);
+    SendMessageW(chkEdgeHide_, BM_SETCHECK,
+                 cfg.edgeHideEnabled ? BST_CHECKED : BST_UNCHECKED, 0);
     setHint(L"");
 }
 
@@ -299,6 +308,8 @@ void SettingsWindow::saveToConfig() {
         SendMessageW(chkAutoStart_, BM_GETCHECK, 0, 0) == BST_CHECKED;
     const bool syncEnabled =
         SendMessageW(chkSyncEnabled_, BM_GETCHECK, 0, 0) == BST_CHECKED;
+    const bool edgeHide =
+        SendMessageW(chkEdgeHide_, BM_GETCHECK, 0, 0) == BST_CHECKED;
 
     const AppConfig oldCfg = ConfigManager::instance().get();
     const bool netChanged = (oldCfg.serverAddress != addr) ||
@@ -314,6 +325,7 @@ void SettingsWindow::saveToConfig() {
     cfg.maxHistoryDays = maxDays;
     cfg.autoStart = autoStart;
     cfg.syncEnabled = syncEnabled;
+    cfg.edgeHideEnabled = edgeHide;
 
     if (!ConfigManager::instance().update(cfg)) {
         setHint(L"配置写入失败");
@@ -364,7 +376,9 @@ void SettingsWindow::saveToConfig() {
                            ", 启动服务=" +
                            std::string(serverEnabled ? "是" : "否") +
                            ", 开机启动=" +
-                           std::string(autoStart ? "是" : "否"));
+                           std::string(autoStart ? "是" : "否") +
+                           ", 贴边隐藏=" +
+                           std::string(edgeHide ? "是" : "否"));
 }
 
 void SettingsWindow::setHint(const wchar_t* text) {
@@ -480,7 +494,7 @@ LRESULT SettingsWindow::handleMessage(HWND hwnd, UINT msg, WPARAM wParam,
             editAddr_ = editDeviceName_ = chkServerEnabled_ = editPort_ =
                 textConnState_ = textConnCount_ = editMaxCount_ =
                     editMaxDays_ = chkAutoStart_ = chkSyncEnabled_ =
-                        btnSave_ = textHint_ = nullptr;
+                        chkEdgeHide_ = btnSave_ = textHint_ = nullptr;
             font_ = nullptr;
             return 0;
         default:

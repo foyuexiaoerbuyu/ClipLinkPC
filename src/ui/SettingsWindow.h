@@ -4,7 +4,7 @@
 // 设置窗口（见需求 §36 / §37 / §67 / §95-§97）
 // - 字段：服务器地址 / 设备名称 / 启动服务 / 服务端口 / 连接状态 /
 //   当前连接数 / 保存记录最大条数 / 保存最长时间(天) /
-//   ☑开机自动启动 / ☑自动同步剪贴板 / [保存]（§36 全字段）
+//   ☑开机自动启动 / ☑自动同步剪贴板 / ☑贴边隐藏 / [保存]（§36 全字段）
 // - 保存：写入 ConfigManager 并应用生效（自启动写注册表、
 //   网络参数变化时重启 SyncManager，§5 / §67）
 // - 连接状态事件驱动 + 窗口可见时 2s 低频刷新连接数
@@ -63,6 +63,7 @@ private:
     HWND editMaxDays_ = nullptr;
     HWND chkAutoStart_ = nullptr;
     HWND chkSyncEnabled_ = nullptr;
+    HWND chkEdgeHide_ = nullptr;  // 贴边隐藏（拖到屏幕顶部自动隐藏主界面）
     HWND btnSave_ = nullptr;
     HWND textHint_ = nullptr;
     HFONT font_ = nullptr;

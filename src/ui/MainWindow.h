@@ -75,6 +75,17 @@ private:
     void reselectByEventId(const std::string& eventId);
     void layoutChildren();
 
+    // ---- 贴边隐藏（拖动到屏幕顶部隐藏 / 鼠标滑到顶部唤出 / 离开后再隐藏）----
+    // 应用配置开关（启动/停止边缘监测定时器，关闭时立即还原窗口位置）
+    void applyEdgeHideConfig();
+    // 边缘监测：唤出与离开判定（低频定时器回调，非高频轮询）
+    void onEdgeTimer();
+    // 贴顶：把主界面停靠到工作区顶部，仅在工作区内露出一条窄边
+    void dockToEdge();
+    // 还原：从贴边状态滑出到屏幕顶部对齐位置；armAutoHide 控制是否开启
+    // "鼠标离开即隐藏"判定（用户主动从托盘唤出时不开启，避免误隐藏）
+    void restoreFromEdge(bool armAutoHide = true);
+
     // 历史内容预览：换行/制表符压成空格、宽字符截断，防撑爆列表（§8）
     static std::wstring makePreview(const std::string& utf8);
 
@@ -89,6 +100,20 @@ private:
     HFONT gearFont_ = nullptr;
 
     bool topMost_ = false;  // 当前窗口是否处于置顶态
+
+    // ---- 贴边隐藏状态 ----
+    bool edgeHideEnabled_ = false;   // 配置项：贴边隐藏是否开启
+    bool edgeHidden_ = false;        // 当前是否已被贴边隐藏（窗口在屏幕外）
+    bool edgeShown_ = false;         // 是否由贴边唤出（用于"离开即隐藏"判定）
+    bool edgeHovered_ = false;       // 贴边唤出后鼠标是否已进入过窗口
+    bool dragging_ = false;          // 用户是否正在拖动/缩放窗口
+    bool edgeRevealArmed_ = false;   // 贴边隐藏后鼠标已离开顶部边缘、允许再次唤出
+    bool edgeTopMostSuppressed_ = false;  // 隐藏期间为避让顶部任务栏临时取消过置顶
+    ULONGLONG edgeShownTick_ = 0;    // 贴边唤出时刻（毫秒），用于离开延时防抖
+    int edgeRestoreLeft_ = 0;        // 贴边隐藏前的窗口左边坐标（还原用）
+
+    static constexpr UINT_PTR kEdgeTimerId = 1;
+    static constexpr UINT kEdgeTimerIntervalMs = 120;
 
     std::function<void()> settingsHandler_;
     std::vector<ClipboardEvent> rows_;  // 与列表项一一对应的完整内容

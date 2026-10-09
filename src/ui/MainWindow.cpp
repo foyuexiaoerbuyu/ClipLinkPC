@@ -7,6 +7,7 @@
 #include <algorithm>
 
 #include "clipboard/ClipboardMonitor.h"
+#include "config/ConfigManager.h"
 #include "database/ClipboardRepository.h"
 #include "sync/SyncManager.h"
 #include "ui/ForegroundTracker.h"
@@ -39,6 +40,12 @@ constexpr size_t kPreviewChars = 60;
 // 逻辑设计尺寸（§6，随后按 DPI 缩放）
 constexpr int kDesignWidth = 200;
 constexpr int kDesignHeight = 500;
+
+// ---- 贴边隐藏参数（逻辑像素，运行时按 DPI 缩放）--------------------------
+constexpr int kEdgeDockThresholdPx = 6;    // 拖到距屏幕顶部多少像素内视为贴顶
+constexpr int kEdgePeekPx = 4;             // 隐藏后在工作区内露出的窄边高度(3~5px)
+constexpr int kEdgeTriggerPx = 2;          // 鼠标滑到唤出线上方多少像素内唤出
+constexpr DWORD kEdgeLeaveDelayMs = 400;   // 唤出后延时判定离开，防抖
 
 int scaleForDpi(int value) {
     HDC dc = GetDC(nullptr);
@@ -181,6 +188,7 @@ bool MainWindow::create(HINSTANCE instance) {
 
     refreshHistory();
     updateConnStatus();
+    applyEdgeHideConfig();  // 按配置决定是否开启贴边隐藏监测
     CLIPLOG_INFO(kTag, "主窗口创建完成, 逻辑尺寸 200x500");
     return true;
 }
@@ -215,6 +223,190 @@ void MainWindow::layoutChildren() {
     const int listTop = top + gear + scaleForDpi(6) + headH + scaleForDpi(4);
     SetWindowPos(listBox_, nullptr, pad, listTop, cw - pad * 2,
                  ch - listTop - pad, SWP_NOZORDER);
+}
+
+// ---------------------------------------------------------------------------
+// 贴边隐藏：
+//   1) 勾选后把主界面拖到屏幕顶部 -> 窗口滑出屏幕顶部（仅留一条窄边）
+//   2) 鼠标再滑动到屏幕顶部该位置 -> 主界面滑出显示
+//   3) 鼠标离开主界面区域 -> 再次隐藏
+// 实现约束：仅用窗口自身的低频定时器读取光标位置与窗口矩形，
+// 不安装全局鼠标钩子、不改动其他模块（§62 UI 与业务解耦）
+// ---------------------------------------------------------------------------
+
+void MainWindow::applyEdgeHideConfig() {
+    if (hwnd_ == nullptr) return;
+
+    const bool enabled = ConfigManager::instance().get().edgeHideEnabled;
+    if (enabled == edgeHideEnabled_) return;
+
+    edgeHideEnabled_ = enabled;
+    if (enabled) {
+        // 低频监测光标位置（120ms），不做高频轮询
+        SetTimer(hwnd_, kEdgeTimerId, kEdgeTimerIntervalMs, nullptr);
+        CLIPLOG_INFO(kTag, "贴边隐藏已开启");
+    } else {
+        KillTimer(hwnd_, kEdgeTimerId);
+        // 关闭开关时若窗口仍在屏幕外，立即还原，避免窗口"消失"
+        if (edgeHidden_) restoreFromEdge(false);
+        edgeHidden_ = false;
+        edgeShown_ = false;
+        edgeHovered_ = false;
+        edgeRevealArmed_ = false;
+        edgeTopMostSuppressed_ = false;
+        CLIPLOG_INFO(kTag, "贴边隐藏已关闭，窗口位置已还原");
+    }
+}
+
+void MainWindow::onEdgeTimer() {
+    if (hwnd_ == nullptr || !edgeHideEnabled_) return;
+    // 托盘隐藏 / 最小化期间不参与贴边判定
+    if (!IsWindowVisible(hwnd_) || IsIconic(hwnd_)) return;
+
+    POINT pt = {0, 0};
+    if (!GetCursorPos(&pt)) return;
+
+    RECT rc = {0, 0, 0, 0};
+    if (!GetWindowRect(hwnd_, &rc)) return;
+
+    HMONITOR monitor = MonitorFromWindow(hwnd_, MONITOR_DEFAULTTONEAREST);
+    MONITORINFO mi = {};
+    mi.cbSize = sizeof(mi);
+    if (monitor == nullptr || !GetMonitorInfoW(monitor, &mi)) return;
+
+    // 唤出触发线以工作区顶部为准：任务栏在顶部时即任务栏下沿，鼠标滑到
+    // 屏幕顶部/任务栏上同样满足条件；隐藏后窗口在工作区内露出 peek 高的
+    // 窄边，触发线在此基础上下移 peek 高度，保证鼠标落在露出的窄边上也能
+    // 唤出。水平范围按窗口宽度判定（窄边始终可见，用户能对准隐藏位置）。
+    const int workTop = mi.rcWork.top;
+    const int peek = scaleForDpi(kEdgePeekPx);
+    const int trigger = workTop + peek + scaleForDpi(kEdgeTriggerPx);
+    const bool atEdge = pt.y <= trigger && pt.x >= rc.left && pt.x < rc.right;
+
+    if (edgeHidden_) {
+        // 隐藏后台：需鼠标先离开顶部边缘再滑回，才触发唤出，
+        // 避免拖动到顶部松手时鼠标仍停留在边缘造成"隐藏即弹出"
+        if (!edgeRevealArmed_) {
+            if (!atEdge) edgeRevealArmed_ = true;
+            return;
+        }
+        if (atEdge) restoreFromEdge(true);
+        return;
+    }
+
+    if (dragging_) return;  // 用户拖动中不介入，防止与拖动操作抢占
+
+    const bool inside = pt.x >= rc.left && pt.x < rc.right && pt.y >= rc.top &&
+                        pt.y < rc.bottom;
+    if (inside) {
+        edgeHovered_ = true;
+        return;
+    }
+
+    // 鼠标离开主界面区域：仅对「由贴边唤出」的窗口生效，并加延时防抖
+    if (edgeShown_ && edgeHovered_ &&
+        GetTickCount64() - edgeShownTick_ >= kEdgeLeaveDelayMs) {
+        dockToEdge();
+    }
+}
+
+void MainWindow::dockToEdge() {
+    if (hwnd_ == nullptr || edgeHidden_) return;
+
+    RECT rc = {0, 0, 0, 0};
+    if (!GetWindowRect(hwnd_, &rc)) return;
+
+    HMONITOR monitor = MonitorFromWindow(hwnd_, MONITOR_DEFAULTTONEAREST);
+    MONITORINFO mi = {};
+    mi.cbSize = sizeof(mi);
+    if (monitor == nullptr || !GetMonitorInfoW(monitor, &mi)) return;
+
+    const int height = rc.bottom - rc.top;
+    const int peek = scaleForDpi(kEdgePeekPx);
+    // 统一停靠公式：窗口底边 = 工作区顶边 + peek，即隐藏后在工作区内始终
+    // 露出 peek 高的窄边，用户能大致看出隐藏位置；任务栏在底部/左右时
+    // rcWork.top 就是屏幕顶部，效果同样是露出窄边，行为保持一致。
+    const int y = mi.rcWork.top - height + peek;
+
+    // 任务栏位于显示器顶部时，工作区顶边与屏幕顶部之间被任务栏占用。窗口
+    // 矩形虽会延伸进该区域，但任务栏恒在普通窗口之上：只要隐藏期间窗口不
+    // 保持置顶，重叠部分就会被任务栏盖住，既不遮挡/悬浮任务栏，又能露出窄边。
+    // 因此置顶态窗口在隐藏期间临时降为普通层级，唤出时再恢复置顶。
+    const bool taskbarAtTop = mi.rcWork.top > mi.rcMonitor.top;
+    UINT flags = SWP_NOSIZE | SWP_NOACTIVATE;
+    HWND insertAfter = nullptr;
+    edgeTopMostSuppressed_ = false;
+    if (taskbarAtTop && topMost_) {
+        insertAfter = HWND_NOTOPMOST;
+        edgeTopMostSuppressed_ = true;
+    } else {
+        flags |= SWP_NOZORDER;
+    }
+
+    if (!SetWindowPos(hwnd_, insertAfter, rc.left, y, 0, 0, flags)) {
+        CLIPLOG_WARN(kTag, "贴边隐藏失败, errno=" +
+                               std::to_string(GetLastError()));
+        edgeTopMostSuppressed_ = false;
+        return;
+    }
+
+    edgeRestoreLeft_ = rc.left;
+    edgeHidden_ = true;
+    edgeShown_ = false;
+    edgeHovered_ = false;
+    edgeRevealArmed_ = false;
+    CLIPLOG_INFO(kTag, taskbarAtTop
+                           ? "主界面已贴边隐藏（任务栏在顶部，工作区内露出窄边）"
+                           : "主界面已贴边隐藏（屏幕顶部，露出窄边）");
+}
+
+void MainWindow::restoreFromEdge(bool armAutoHide) {
+    if (hwnd_ == nullptr || !edgeHidden_) return;
+
+    RECT rc = {0, 0, 0, 0};
+    if (!GetWindowRect(hwnd_, &rc)) return;
+
+    HMONITOR monitor = MonitorFromWindow(hwnd_, MONITOR_DEFAULTTONEAREST);
+    MONITORINFO mi = {};
+    mi.cbSize = sizeof(mi);
+    if (monitor == nullptr || !GetMonitorInfoW(monitor, &mi)) return;
+
+    const int width = rc.right - rc.left;
+    int left = edgeRestoreLeft_;
+    // 兜底：原水平位置已完全脱离工作区时贴工作区左边显示
+    if (left + width <= mi.rcWork.left || left >= mi.rcWork.right) {
+        left = mi.rcWork.left;
+    }
+
+    // 隐藏期间为避让顶部任务栏临时取消过置顶的窗口，唤出时恢复置顶态，
+    // 保持与用户隐藏前设置的一致；其余情况维持原 Z 序不动
+    UINT flags = SWP_NOSIZE | SWP_NOACTIVATE;
+    HWND insertAfter = nullptr;
+    if (!edgeTopMostSuppressed_) {
+        flags |= SWP_NOZORDER;
+    } else {
+        insertAfter = HWND_TOPMOST;
+    }
+
+    if (!SetWindowPos(hwnd_, insertAfter, left, mi.rcWork.top, 0, 0, flags)) {
+        CLIPLOG_WARN(kTag, "贴边唤出失败, errno=" +
+                               std::to_string(GetLastError()));
+        return;
+    }
+
+    if (edgeTopMostSuppressed_) {
+        topMost_ = true;  // 与置顶按钮文案保持一致
+        if (pinBtn_ != nullptr) SetWindowTextW(pinBtn_, L"取消置顶");
+        CLIPLOG_INFO(kTag, "贴边唤出：已恢复窗口置顶态");
+    }
+    edgeTopMostSuppressed_ = false;
+
+    edgeHidden_ = false;
+    edgeShown_ = armAutoHide;  // 是否开启"鼠标离开即隐藏"判定
+    edgeHovered_ = false;
+    edgeRevealArmed_ = false;
+    edgeShownTick_ = GetTickCount64();
+    CLIPLOG_INFO(kTag, "主界面已从贴边状态唤出");
 }
 
 std::wstring MainWindow::makePreview(const std::string& utf8) {
@@ -329,6 +521,9 @@ void MainWindow::show() {
     if (hwnd_ == nullptr) return;
     refreshHistory();
     updateConnStatus();
+    // 若主界面处于贴边隐藏状态，先从屏幕顶部还原再正常显示
+    // （armAutoHide=false：用户主动唤出时不立即触发"离开即隐藏"）
+    if (edgeHidden_) restoreFromEdge(false);
     if (IsIconic(hwnd_)) ShowWindow(hwnd_, SW_RESTORE);
     ShowWindow(hwnd_, SW_SHOW);
     SetForegroundWindow(hwnd_);
@@ -553,6 +748,44 @@ LRESULT MainWindow::handleMessage(HWND hwnd, UINT msg, WPARAM wParam,
         case WM_SIZE:
             layoutChildren();
             return 0;
+        case WM_ENTERSIZEMOVE:
+            // 用户开始拖动 / 缩放窗口：贴边判定延后到拖动结束，避免抢占操作
+            dragging_ = true;
+            return 0;
+        case WM_EXITSIZEMOVE: {
+            dragging_ = false;
+            if (!edgeHideEnabled_ || edgeHidden_) return 0;
+            // 拖动结束：窗口顶边贴住（或越过）屏幕工作区顶部 -> 贴边隐藏
+            RECT rc = {0, 0, 0, 0};
+            HMONITOR monitor =
+                MonitorFromWindow(hwnd, MONITOR_DEFAULTTONEAREST);
+            MONITORINFO mi = {};
+            mi.cbSize = sizeof(mi);
+            const bool docked =
+                GetWindowRect(hwnd, &rc) && monitor != nullptr &&
+                GetMonitorInfoW(monitor, &mi) &&
+                rc.top <= mi.rcWork.top + scaleForDpi(kEdgeDockThresholdPx);
+            if (docked) {
+                dockToEdge();
+            } else if (edgeShown_) {
+                // 用户把窗口从屏幕顶部拖走：转为普通窗口，取消"离开即隐藏"
+                edgeShown_ = false;
+                edgeHovered_ = false;
+            }
+            return 0;
+        }
+        case WM_TIMER:
+            // 贴边隐藏：低频监测光标位置（唤出 / 离开判定）
+            if (wParam == kEdgeTimerId) {
+                onEdgeTimer();
+                return 0;
+            }
+            return DefWindowProcW(hwnd, msg, wParam, lParam);
+        case kMsgConfigChanged:
+            // 设置保存后同步贴边隐藏开关，并刷新连接状态文案
+            applyEdgeHideConfig();
+            updateConnStatus();
+            return 0;
         case WM_COMMAND:
             onCommand(wParam, lParam);
             return 0;
@@ -578,6 +811,7 @@ LRESULT MainWindow::handleMessage(HWND hwnd, UINT msg, WPARAM wParam,
             if (listBox_ != nullptr) SetFocus(listBox_);
             return 0;
         case WM_DESTROY:
+            KillTimer(hwnd, kEdgeTimerId);
             UiDispatcher::instance().unregisterWindow(hwnd);
             hwnd_ = nullptr;
             if (gearFont_ != nullptr) {
@@ -588,6 +822,14 @@ LRESULT MainWindow::handleMessage(HWND hwnd, UINT msg, WPARAM wParam,
             statusText_ = settingsBtn_ = headingText_ = pinBtn_ = listBox_ =
                 nullptr;
             topMost_ = false;  // 窗口已销毁，置顶态随窗口样式一并失效
+            // 贴边隐藏状态随窗口销毁一并复位
+            edgeHideEnabled_ = false;
+            edgeHidden_ = false;
+            edgeShown_ = false;
+            edgeHovered_ = false;
+            edgeRevealArmed_ = false;
+            edgeTopMostSuppressed_ = false;
+            dragging_ = false;
             return 0;
         default:
             return DefWindowProcW(hwnd, msg, wParam, lParam);

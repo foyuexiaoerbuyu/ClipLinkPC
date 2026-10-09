@@ -142,6 +142,7 @@ bool ConfigManager::load() {
         root.get("maxHistoryDays").asInt(constants::kDefaultMaxHistoryDays);
     config_.port = root.get("port").asInt(constants::kDefaultPort);
     config_.syncEnabled = root.get("syncEnabled").asBool(true);
+    config_.edgeHideEnabled = root.get("edgeHideEnabled").asBool(false);
 
     // 数值边界保护
     if (config_.maxHistoryCount <= 0) {
@@ -177,6 +178,7 @@ bool ConfigManager::saveLocked() {
     root.set("maxHistoryDays", static_cast<int64_t>(config_.maxHistoryDays));
     root.set("port", static_cast<int64_t>(config_.port));
     root.set("syncEnabled", config_.syncEnabled);
+    root.set("edgeHideEnabled", config_.edgeHideEnabled);
 
     std::string text = root.dump(2);
     text.push_back('\n');

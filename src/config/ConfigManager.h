@@ -23,6 +23,7 @@ struct AppConfig {
     int  maxHistoryDays  = 30;    // 历史最长保存天数（§28）
     int  port = 9000;             // Server 监听端口（§34）
     bool syncEnabled = true;      // 自动同步剪贴板（§36）
+    bool edgeHideEnabled = false; // 贴边隐藏：拖动到屏幕顶部自动隐藏主界面
 };
 
 class ConfigManager {
