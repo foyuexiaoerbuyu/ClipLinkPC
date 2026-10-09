@@ -18,7 +18,7 @@ constexpr int64_t kMillisPerDay = 24ll * 60ll * 60ll * 1000ll;
 // 查询列（与 rowToEvent 的列索引一一对应）
 const char* kSelectColumns =
     "event_id, device_id, content_hash, content_type, content, "
-    "client_time, server_time, server_seq, created_at, sync_status "
+    "client_time, server_time, server_seq, created_at, sync_status, pinned "
     "FROM clipboard_history ";
 
 }  // namespace
@@ -41,6 +41,7 @@ ClipboardEvent ClipboardRepository::rowToEvent(
     ev.serverSeq   = st.columnNull(7) ? 0 : st.columnInt64(7);
     ev.createdAt   = st.columnInt64(8);
     ev.syncStatus  = static_cast<SyncStatus>(st.columnInt64(9));
+    ev.pinned      = st.columnInt64(10) != 0;
     return ev;
 }
 
@@ -139,7 +140,8 @@ std::vector<ClipboardEvent> ClipboardRepository::queryHistory(int offset,
 
     DatabaseManager::Statement st(
         db, (std::string("SELECT ") + kSelectColumns +
-             "ORDER BY created_at DESC, id DESC LIMIT ? OFFSET ?;").c_str());
+             "ORDER BY pinned DESC, created_at DESC, id DESC LIMIT ? OFFSET ?;")
+                .c_str());
     if (!st.valid()) return out;
     st.bindInt64(1, limit);
     st.bindInt64(2, offset < 0 ? 0 : offset);
@@ -147,6 +149,30 @@ std::vector<ClipboardEvent> ClipboardRepository::queryHistory(int offset,
         out.push_back(rowToEvent(st));
     }
     return out;
+}
+
+bool ClipboardRepository::setPinned(const std::string& eventId, bool pinned) {
+    auto& db = DatabaseManager::instance();
+    if (!db.available() || eventId.empty()) return false;
+
+    bool changed = false;
+    {
+        DatabaseManager::Statement st(
+            db, "UPDATE clipboard_history SET pinned = ? WHERE event_id = ?;");
+        if (!st.valid()) return false;
+        st.bindInt64(1, pinned ? 1 : 0);
+        st.bindText(2, eventId);
+        changed = (st.step() == SQLITE_DONE && st.changes() > 0);
+    }
+    if (!changed) {
+        CLIPLOG_WARN(kTag, "setPinned 未命中 eventId=" + eventId);
+        return false;
+    }
+    // 置顶/取消置顶会改变列表排序，通知 UI 重新加载（§63 事件驱动）
+    notifyChanged();
+    CLIPLOG_INFO(kTag, std::string("置顶状态变更 eventId=") + eventId +
+                           ", pinned=" + (pinned ? "1" : "0"));
+    return true;
 }
 
 bool ClipboardRepository::updateServerAck(const std::string& eventId,

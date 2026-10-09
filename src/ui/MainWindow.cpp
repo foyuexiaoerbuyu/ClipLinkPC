@@ -9,6 +9,7 @@
 #include "clipboard/ClipboardMonitor.h"
 #include "database/ClipboardRepository.h"
 #include "sync/SyncManager.h"
+#include "ui/ForegroundTracker.h"
 #include "ui/UiDispatcher.h"
 #include "util/Json.h"
 #include "util/Logger.h"
@@ -28,6 +29,9 @@ constexpr int kIdSettingsBtn = 1001;
 constexpr int kIdHistoryList = 1002;
 constexpr int kIdPinBtn = 1005;  // 「置顶 / 取消置顶」切换按钮
 
+// 右键上下文菜单命令 ID（历史项置顶 / 取消置顶）
+constexpr int kIdMenuTogglePin = 2001;
+
 // 单屏展示行数上限（超出的更旧记录不渲染，避免超长列表拖慢 UI）
 constexpr int kMaxDisplayRows = 200;
 // 内容预览最大宽字符数（§8 长文本截断）
@@ -45,6 +49,23 @@ int scaleForDpi(int value) {
     }
     if (dpi <= 0) dpi = 96;
     return MulDiv(value, dpi, 96);
+}
+
+// 模拟一次 Ctrl+V（SendInput）：按"按下 Ctrl -> 按下 V -> 抬起 V ->
+// 抬起 Ctrl"的完整序列发送，避免修饰键残留导致后续输入异常
+bool sendPasteKeystroke() {
+    INPUT inputs[4] = {};
+    inputs[0].type       = INPUT_KEYBOARD;
+    inputs[0].ki.wVk     = VK_CONTROL;
+    inputs[1].type       = INPUT_KEYBOARD;
+    inputs[1].ki.wVk     = 'V';
+    inputs[2].type       = INPUT_KEYBOARD;
+    inputs[2].ki.wVk     = 'V';
+    inputs[2].ki.dwFlags = KEYEVENTF_KEYUP;
+    inputs[3].type       = INPUT_KEYBOARD;
+    inputs[3].ki.wVk     = VK_CONTROL;
+    inputs[3].ki.dwFlags = KEYEVENTF_KEYUP;
+    return SendInput(4, inputs, sizeof(INPUT)) == 4;
 }
 
 }  // namespace
@@ -224,18 +245,36 @@ std::wstring MainWindow::makePreview(const std::string& utf8) {
 void MainWindow::refreshHistory() {
     if (listBox_ == nullptr) return;
 
+    // 刷新前记录选中项：置顶导致重排 / 新记录插入时，重排后恢复选中，
+    // 避免用户当前关注的条目在右键置顶、取消置顶后跳走
+    std::string selectedId;
+    const int prevSel = static_cast<int>(
+        SendMessageW(listBox_, LB_GETCURSEL, 0, 0));
+    if (prevSel != LB_ERR && prevSel >= 0 &&
+        static_cast<size_t>(prevSel) < rows_.size()) {
+        selectedId = rows_[static_cast<size_t>(prevSel)].eventId;
+    }
+
     auto& repo = database::ClipboardRepository::instance();
     rows_ = repo.queryHistory(0, kMaxDisplayRows);
 
     SendMessageW(listBox_, WM_SETREDRAW, FALSE, 0);
     SendMessageW(listBox_, LB_RESETCONTENT, 0, 0);
     for (const auto& ev : rows_) {
-        const std::wstring preview = makePreview(ev.content);
+        std::wstring preview = makePreview(ev.content);
+        // 置顶项加视觉前缀（置顶记录由 SQL 的 pinned DESC 排序保证在最前）
+        if (ev.pinned) {
+            preview = L"[置顶] " + preview;
+        }
         SendMessageW(listBox_, LB_ADDSTRING, 0,
                      reinterpret_cast<LPARAM>(preview.c_str()));
     }
     SendMessageW(listBox_, WM_SETREDRAW, TRUE, 0);
     InvalidateRect(listBox_, nullptr, TRUE);
+
+    if (!selectedId.empty()) {
+        reselectByEventId(selectedId);
+    }
 }
 
 void MainWindow::updateConnStatus() {
@@ -333,6 +372,133 @@ void MainWindow::copySelectedItem() {
     }
 }
 
+void MainWindow::pasteSelectedItem() {
+    if (listBox_ == nullptr) return;
+    const int sel = static_cast<int>(
+        SendMessageW(listBox_, LB_GETCURSEL, 0, 0));
+    if (sel == LB_ERR || sel < 0 ||
+        static_cast<size_t>(sel) >= rows_.size()) {
+        return;
+    }
+
+    // 1) 先写入系统剪贴板（与单击复制同一条路径，含 §14-§15 防循环标记）
+    const ClipboardEvent ev = rows_[static_cast<size_t>(sel)];
+    if (!clipboard::ClipboardMonitor::instance().writeToClipboard(ev.content)) {
+        CLIPLOG_WARN(kTag,
+                     "双击粘贴失败：历史项写入剪贴板失败（剪贴板被占用）");
+        return;
+    }
+
+    // 2) 定位「上次光标所在输入框」：ClipLink 抢焦点前最后一个他进程前台窗口
+    HWND target = ForegroundTracker::instance().lastForeground();
+    if (target == nullptr) {
+        CLIPLOG_WARN(kTag, "双击粘贴：无上次前台窗口记录，已仅复制到剪贴板");
+        return;
+    }
+
+    // 3) 还原焦点到目标窗口后模拟 Ctrl+V
+    if (!SetForegroundWindow(target)) {
+        // 前台锁定 / 目标以更高完整性级别运行（UIPI）：降级为仅复制到剪贴板
+        CLIPLOG_WARN(kTag, "双击粘贴：目标窗口置前台失败，已仅复制到剪贴板");
+        return;
+    }
+    // 等待焦点真正切回目标窗口（SetForegroundWindow 异步生效，
+    // 轮询上限约 200ms），否则 Ctrl+V 会发给错误的窗口
+    for (int i = 0; i < 20 && GetForegroundWindow() != target; ++i) {
+        Sleep(10);
+    }
+
+    if (sendPasteKeystroke()) {
+        CLIPLOG_INFO(kTag,
+                     "双击粘贴：已向目标窗口发送 Ctrl+V, eventId=" +
+                         ev.eventId);
+    } else {
+        CLIPLOG_WARN(kTag, "双击粘贴：SendInput 失败, errno=" +
+                               std::to_string(GetLastError()));
+    }
+}
+
+void MainWindow::showItemContextMenu(LPARAM lParam) {
+    if (listBox_ == nullptr || hwnd_ == nullptr) return;
+
+    int index = -1;
+    POINT pt = {0, 0};
+    const bool fromKeyboard = (lParam == static_cast<LPARAM>(-1));
+    if (fromKeyboard) {
+        // 键盘触发（菜单键 / Shift+F10）：作用于当前选中项
+        const int sel = static_cast<int>(
+            SendMessageW(listBox_, LB_GETCURSEL, 0, 0));
+        if (sel == LB_ERR) return;
+        index = sel;
+    } else {
+        // 鼠标右键：lParam 为屏幕坐标
+        pt.x = static_cast<LONG>(static_cast<short>(LOWORD(lParam)));
+        pt.y = static_cast<LONG>(static_cast<short>(HIWORD(lParam)));
+        POINT client = pt;
+        ScreenToClient(listBox_, &client);
+        const LRESULT hit = SendMessageW(
+            listBox_, LB_ITEMFROMPOINT, 0,
+            MAKELPARAM(static_cast<WORD>(client.x),
+                       static_cast<WORD>(client.y)));
+        if (HIWORD(hit) != 0) return;  // 右键点在列表空白区域
+        index = static_cast<int>(LOWORD(hit));
+    }
+    if (index < 0 || static_cast<size_t>(index) >= rows_.size()) return;
+
+    // ListBox 右键默认不改变选择：先同步选中到被点击条目
+    SendMessageW(listBox_, LB_SETCURSEL, static_cast<WPARAM>(index), 0);
+    const ClipboardEvent ev = rows_[static_cast<size_t>(index)];
+
+    HMENU menu = CreatePopupMenu();
+    if (menu == nullptr) return;
+    AppendMenuW(menu, MF_STRING, static_cast<UINT_PTR>(kIdMenuTogglePin),
+                ev.pinned ? L"取消置顶" : L"置顶");
+
+    if (fromKeyboard) {
+        // 键盘触发无鼠标坐标：贴着该项底部弹出
+        RECT itemRc = {0, 0, 0, 0};
+        if (SendMessageW(listBox_, LB_GETITEMRECT,
+                         static_cast<WPARAM>(index),
+                         reinterpret_cast<LPARAM>(&itemRc)) != LB_ERR) {
+            pt.x = itemRc.left;
+            pt.y = itemRc.bottom;
+            ClientToScreen(listBox_, &pt);
+        } else {
+            GetCursorPos(&pt);
+        }
+    }
+
+    // 弹出菜单期间窗口需处于前台，否则菜单无法正常收起
+    SetForegroundWindow(hwnd_);
+    const UINT cmd = TrackPopupMenu(
+        menu, TPM_RETURNCMD | TPM_RIGHTBUTTON, pt.x, pt.y, 0, hwnd_, nullptr);
+    DestroyMenu(menu);
+
+    if (cmd != static_cast<UINT>(kIdMenuTogglePin)) return;
+
+    // 置顶 / 取消置顶：纯本地属性，写入后按 pinned DESC 重排列表（§63 事件驱动）
+    auto& repo = database::ClipboardRepository::instance();
+    if (repo.setPinned(ev.eventId, !ev.pinned)) {
+        // 置顶状态写入成功：refreshHistory 按 pinned DESC 重排并恢复选中项
+        refreshHistory();
+        CLIPLOG_INFO(kTag, std::string("历史项置顶状态已切换: ") +
+                               (ev.pinned ? "取消置顶" : "置顶") +
+                               ", eventId=" + ev.eventId);
+    } else {
+        CLIPLOG_WARN(kTag, "历史项置顶状态切换失败, eventId=" + ev.eventId);
+    }
+}
+
+void MainWindow::reselectByEventId(const std::string& eventId) {
+    if (listBox_ == nullptr) return;
+    for (size_t i = 0; i < rows_.size(); ++i) {
+        if (rows_[i].eventId == eventId) {
+            SendMessageW(listBox_, LB_SETCURSEL, static_cast<WPARAM>(i), 0);
+            return;
+        }
+    }
+}
+
 void MainWindow::onCommand(WPARAM wParam, LPARAM lParam) {
     (void)lParam;
     const int id = LOWORD(wParam);
@@ -349,9 +515,16 @@ void MainWindow::onCommand(WPARAM wParam, LPARAM lParam) {
         return;
     }
     if (id == kIdHistoryList) {
-        // §76：单击选择与双击均执行"复制到系统剪贴板"
-        if (code == LBN_SELCHANGE || code == LBN_DBLCLK) {
+        // §76：单击选择 -> 复制到系统剪贴板
+        if (code == LBN_SELCHANGE) {
             copySelectedItem();
+            return;
+        }
+        // 双击 -> 复制到剪贴板并粘贴到「上次光标所在输入框」
+        // （双击前必然先收到一次 LBN_SELCHANGE，故两个动作互相独立）
+        if (code == LBN_DBLCLK) {
+            pasteSelectedItem();
+            return;
         }
     }
 }
@@ -383,6 +556,13 @@ LRESULT MainWindow::handleMessage(HWND hwnd, UINT msg, WPARAM wParam,
         case WM_COMMAND:
             onCommand(wParam, lParam);
             return 0;
+        case WM_CONTEXTMENU:
+            // 历史列表右键：弹出「置顶 / 取消置顶」上下文菜单
+            if (reinterpret_cast<HWND>(wParam) == listBox_) {
+                showItemContextMenu(lParam);
+                return 0;
+            }
+            return DefWindowProcW(hwnd, msg, wParam, lParam);
         case kMsgHistoryChanged:
             // §63：Repository 变更通知驱动刷新（非轮询）
             refreshHistory();

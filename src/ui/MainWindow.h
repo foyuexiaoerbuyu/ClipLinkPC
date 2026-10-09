@@ -4,11 +4,15 @@
 // 主窗口（见需求 §6-§9 / §62-§64 / §75-§76）
 // - 纯 Win32 固定基础尺寸 200×500（允许 DPI 缩放，§6）
 // - 右上角 ⚙ 按钮 -> 设置窗口（§7）
-// - 历史列表：created_at DESC、内容预览截断（§75），
+// - 历史列表：置顶项优先、其余 created_at DESC 排序，内容预览截断（§75），
 //   仅在 Repository 变更通知（kMsgHistoryChanged）时刷新，
 //   禁止 UI 定时轮询 SELECT（§63）
-// - 点击/双击历史项 -> 写入系统剪贴板（HISTORY），
+// - 单击历史项 -> 写入系统剪贴板（HISTORY），
 //   不发 WebSocket、不新增历史（§9 / §12 / §76）
+// - 双击历史项 -> 写入剪贴板后，模拟 Ctrl+V 粘贴到「上次光标所在输入框」
+//   （即 ClipLink 抢焦点前最后一个非本进程的前台窗口，见 ForegroundTracker）
+// - 右键历史项 -> 弹出「置顶 / 取消置顶」菜单；置顶为纯本地属性，
+//   置顶项在列表排最前，取消置顶后按时间回落到原位置
 // - 关闭按钮默认隐藏到托盘（§64）
 // - UI 与业务解耦：只经回调/接口调用业务层（§62）
 // ---------------------------------------------------------------------------
@@ -63,6 +67,12 @@ private:
 
     void onCommand(WPARAM wParam, LPARAM lParam);
     void copySelectedItem();
+    // 双击历史项：写入剪贴板 + 模拟 Ctrl+V 粘贴到上次光标所在输入框
+    void pasteSelectedItem();
+    // 右键历史项：弹出「置顶 / 取消置顶」上下文菜单
+    void showItemContextMenu(LPARAM lParam);
+    // 列表刷新后按 eventId 恢复选中（置顶重排后保持焦点不跳）
+    void reselectByEventId(const std::string& eventId);
     void layoutChildren();
 
     // 历史内容预览：换行/制表符压成空格、宽字符截断，防撑爆列表（§8）

@@ -23,6 +23,7 @@
 #include "sync/WebSocketClient.h"
 #include "system/StartupManager.h"
 #include "tray/TrayIcon.h"
+#include "ui/ForegroundTracker.h"
 #include "ui/MainWindow.h"
 #include "ui/SettingsWindow.h"
 #include "ui/UiDispatcher.h"
@@ -102,6 +103,13 @@ void exitApplication() {
 
 // 装配 UI 层（§4 默认后台托盘运行，不弹主窗口）
 bool assembleUi(HINSTANCE instance) {
+    // 0) 前台窗口跟踪：为「双击历史项 -> 粘贴到上次光标所在输入框」提供
+    //    目标窗口（SetWinEventHook 回调投递到本线程消息循环）
+    if (!ui::ForegroundTracker::instance().start()) {
+        CLIPLOG_WARN("main",
+                     "前台窗口跟踪启动失败：双击粘贴将降级为仅复制到剪贴板");
+    }
+
     // 1) Repository 变更 -> 广播刷新（§63 事件驱动，禁止 UI 轮询 SELECT）
     database::ClipboardRepository::instance().setChangeCallback(
         []() { ui::UiDispatcher::instance().broadcast(ui::kMsgHistoryChanged); });
@@ -238,6 +246,7 @@ int WINAPI WinMain(HINSTANCE instance, HINSTANCE /*prevInstance*/,
 
     CLIPLOG_INFO("main", "ClipLink 退出");
     // 逆序释放：托盘 -> UI -> 同步层 -> 数据库 -> 日志
+    ui::ForegroundTracker::instance().stop();
     tray::TrayIcon::instance().destroy();
     ui::SettingsWindow::instance().destroy();
     ui::MainWindow::instance().destroy();

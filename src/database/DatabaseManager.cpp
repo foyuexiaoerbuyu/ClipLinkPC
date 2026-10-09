@@ -33,7 +33,8 @@ const char* kSchemaSql =
     "  client_time INTEGER,"
     "  server_time INTEGER,"
     "  server_seq INTEGER,"
-    "  created_at INTEGER NOT NULL"
+    "  created_at INTEGER NOT NULL,"
+    "  pinned INTEGER NOT NULL DEFAULT 0"
     ");"
     "CREATE INDEX IF NOT EXISTS idx_clipboard_created "
     "ON clipboard_history(created_at);"
@@ -261,24 +262,33 @@ bool DatabaseManager::initSchemaLocked() {
         lastError_ = err;
         return false;
     }
-    // 兼容旧版表结构：缺少 sync_status 列时补齐（§85）
+    // 兼容旧版表结构：缺少 sync_status / pinned 列时补齐（§85 / 置顶功能）
     bool hasSyncStatus = false;
+    bool hasPinned = false;
     {
         Statement st(*this, "PRAGMA table_info(clipboard_history);");
-        if (st.valid()) {
-            while (st.step() == SQLITE_ROW) {
-                if (st.columnText(1) == "sync_status") {
-                    hasSyncStatus = true;
-                    break;
-                }
-            }
-        } else {
+        if (!st.valid()) {
             return false;
+        }
+        while (st.step() == SQLITE_ROW) {
+            const std::string name = st.columnText(1);
+            if (name == "sync_status") {
+                hasSyncStatus = true;
+            } else if (name == "pinned") {
+                hasPinned = true;
+            }
         }
     }
     if (!hasSyncStatus &&
         !exec("ALTER TABLE clipboard_history "
               "ADD COLUMN sync_status INTEGER NOT NULL DEFAULT 0;",
+              &err)) {
+        lastError_ = err;
+        return false;
+    }
+    if (!hasPinned &&
+        !exec("ALTER TABLE clipboard_history "
+              "ADD COLUMN pinned INTEGER NOT NULL DEFAULT 0;",
               &err)) {
         lastError_ = err;
         return false;

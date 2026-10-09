@@ -36,8 +36,14 @@ public:
     // 插入事件：eventId 幂等优先，其次相邻去重；createdAt 为空时取当前时间
     InsertOutcome insertEvent(const ClipboardEvent& event);
 
-    // 按 created_at DESC 分页（新 -> 旧），offset/limit 由 UI 列表控制
+    // 按 pinned DESC, created_at DESC 分页（置顶优先，其余新 -> 旧），
+    // offset/limit 由 UI 列表控制
     std::vector<ClipboardEvent> queryHistory(int offset, int limit);
+
+    // 置顶 / 取消置顶（纯本地 UI 属性，不参与同步）：
+    // 置顶记录在主界面列表排最前，取消后按时间回落到原位置；
+    // 命中并变更后触发变更通知，UI 重新加载列表
+    bool setPinned(const std::string& eventId, bool pinned);
 
     // 服务器 ACK：记录 serverSeq / serverTime，sync_status = SYNCED（§44）
     bool updateServerAck(const std::string& eventId, int64_t serverSeq,

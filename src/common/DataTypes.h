@@ -78,6 +78,8 @@ struct ClipboardEvent {
     int64_t createdAt  = 0;   // 本地入库时间，UTC 毫秒
     ClipboardSource source = ClipboardSource::USER;
     SyncStatus syncStatus = SyncStatus::PENDING;
+    // 列表置顶标记（纯本地 UI 属性，不参与同步；true 时在主界面排最前）
+    bool pinned = false;
 };
 
 // 同步游标（离线增量同步，见需求 §48）
